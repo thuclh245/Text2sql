@@ -10,12 +10,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-import sqlglot
-from sqlglot import exp
-
 from chatsql.benchmarks.bird.paths import BirdPaths
 from chatsql.domain.gold_case import GoldCase
 from chatsql.domain.inference_case import InferenceCase
+from chatsql.execution.guard import is_read_only_select
 
 # ---------------------------------------------------------------------------
 # BIRD raw record structure (for type hints / documentation)
@@ -74,8 +72,8 @@ class BirdLoader:
 
             case = InferenceCase(
                 case_id=case_id,
-                question=rec["question"],
-                database_id=rec["db_id"],
+                question=self._require(rec, "question"),
+                database_id=self._require(rec, "db_id"),
                 evidence=evidence,
             )
             cases.append(case)
@@ -125,21 +123,14 @@ class BirdLoader:
         return f"bird_{qid}"
 
     @staticmethod
+    def _require(rec: dict[str, Any], key: str) -> Any:
+        """Return a required non-empty field, or raise a record-scoped error."""
+        value = rec.get(key)
+        if value is None or value == "":
+            raise ValueError(f"BIRD record {rec.get('question_id')!r} missing field {key!r}")
+        return value
+
+    @staticmethod
     def _is_select(sql: str) -> bool:
-        """Return True if the statement is read-only SELECT SQL."""
-        try:
-            parsed = sqlglot.parse_one(sql, read="sqlite")
-        except sqlglot.errors.ParseError:
-            return False
-        if parsed is None:
-            return False
-        forbidden = (
-            exp.Insert,
-            exp.Update,
-            exp.Delete,
-            exp.Drop,
-            exp.Create,
-            exp.Alter,
-            exp.Command,
-        )
-        return isinstance(parsed, exp.Query) and not any(parsed.find(kind) for kind in forbidden)
+        """Return True if the statement is a single read-only query."""
+        return is_read_only_select(sql)

@@ -28,9 +28,15 @@ class ExecutionResult(BaseModel):
 
     case_id: str
     executed: bool
-    """False if the SQL raised an error."""
+    """False if the SQL raised an error or was blocked by the guard."""
     rows: list[list[Any]] = Field(default_factory=list)
+    row_count: int | None = None
+    """Number of rows before ``row_limit`` truncation (``len(rows)`` if not truncated)."""
+    truncated: bool = False
+    """True if the result set was cut to ``row_limit``; EX is undefined in that case."""
     error: str | None = None
+    error_kind: str | None = None
+    """One of: invalid_sql, rejected, missing_db, timeout, runtime_error."""
     execution_time_seconds: float | None = None
 
 

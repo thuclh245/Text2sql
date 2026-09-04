@@ -13,6 +13,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from chatsql.provenance import sha256_file
+
 # ---------------------------------------------------------------------------
 # Sub-sections
 # ---------------------------------------------------------------------------
@@ -126,17 +128,6 @@ def _get_git_commit(repo_root: Path | None = None) -> str:
         return "unknown"
 
 
-def _hash_file(path: Path) -> str:
-    """Return SHA-256 hex digest of a file, or 'missing' if not found."""
-    if not path.exists():
-        return "missing"
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def _hash_config(config: dict[str, Any] | None) -> str:
     """Stable hash of an arbitrary config dict (sorted keys)."""
     if config is None:
@@ -169,7 +160,7 @@ def build_manifest(
     # Dependency lock hash
     lock_hash = "missing"
     if lock_file is not None:
-        lock_hash = _hash_file(lock_file)
+        lock_hash = sha256_file(lock_file)
     else:
         # Try to find uv.lock or requirements.lock next to pyproject.toml
         base_dir = repo_root if repo_root is not None else Path.cwd()
@@ -180,7 +171,7 @@ def build_manifest(
         ]
         for c in candidates:
             if c.exists():
-                lock_hash = _hash_file(c)
+                lock_hash = sha256_file(c)
                 break
 
     return ExperimentManifest(

@@ -18,6 +18,7 @@ from chatsql.domain.inference_case import InferenceCase
 from chatsql.domain.result import Prediction
 from chatsql.experiments.logger import RunLogger
 from chatsql.experiments.manifest import build_manifest
+from chatsql.execution import ReadOnlySQLiteExecutor
 from chatsql.experiments.runner import BaseEvaluator, BaseStrategy, ExperimentRunner
 
 # ---------------------------------------------------------------------------
@@ -35,7 +36,7 @@ class DummyStrategy(BaseStrategy):
 
 
 class DummyEvaluator(BaseEvaluator):
-    """Always returns execution_correct=False (no executor in this harness)."""
+    """Reports correctness straight from the execution flag (no gold DB in this test)."""
 
     def evaluate(
         self,
@@ -45,7 +46,7 @@ class DummyEvaluator(BaseEvaluator):
         gold_tables: tuple[str, ...],
         gold_columns: tuple[str, ...],
     ) -> dict[str, Any]:
-        return {"execution_correct": False, "note": "foundation runner has no executor yet"}
+        return {"execution_correct": execution.executed}
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +106,7 @@ class TestDummyExperiment:
             strategy=DummyStrategy(),
             evaluator=DummyEvaluator(),
             logger=logger,
+            executor=ReadOnlySQLiteExecutor(tmp_path),
         )
 
         catalogs = {"shop": simple_catalog}
@@ -113,10 +115,11 @@ class TestDummyExperiment:
         # All 3 cases should produce records
         assert len(records) == 3
 
-        # All 5 artifact files must exist
+        # The standard artifact files must exist
         assert logger.is_complete(), (
             "Dummy experiment must create: manifest.json, predictions.jsonl, "
-            "executions.jsonl, metrics.json, errors.jsonl"
+            "context_views.jsonl, raw_model_outputs.jsonl, executions.jsonl, "
+            "metrics.json, errors.jsonl"
         )
 
     def test_manifest_captured_in_run(
@@ -148,6 +151,7 @@ class TestDummyExperiment:
             strategy=DummyStrategy(),
             evaluator=DummyEvaluator(),
             logger=logger,
+            executor=ReadOnlySQLiteExecutor(tmp_path),
         )
         runner.run(manifest=manifest, cases=cases, golds=golds, catalogs={"shop": simple_catalog})
 
@@ -178,6 +182,7 @@ class TestDummyExperiment:
             strategy=DummyStrategy(),
             evaluator=DummyEvaluator(),
             logger=RunLogger(runs_root=tmp_path, run_id="mismatch-test"),
+            executor=ReadOnlySQLiteExecutor(tmp_path),
         )
 
         with pytest.raises(ValueError, match="case/gold mismatch"):
@@ -215,6 +220,7 @@ class TestDummyExperiment:
             strategy=FailingStrategy(),
             evaluator=DummyEvaluator(),
             logger=logger,
+            executor=ReadOnlySQLiteExecutor(tmp_path),
         )
 
         records = runner.run(

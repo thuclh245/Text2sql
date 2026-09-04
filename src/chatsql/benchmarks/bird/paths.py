@@ -27,8 +27,9 @@ from pathlib import Path
 class BirdPaths:
     """Centralises all BIRD dataset path logic."""
 
-    def __init__(self, mini_dev_root: Path) -> None:
+    def __init__(self, mini_dev_root: Path, *, data_dir: Path | None = None) -> None:
         self.root = mini_dev_root.resolve()
+        self._data_dir_override = data_dir.resolve() if data_dir is not None else None
 
     @classmethod
     def from_repo_root(cls, repo_root: Path | None = None) -> BirdPaths:
@@ -50,7 +51,13 @@ class BirdPaths:
 
     @property
     def data_dir(self) -> Path:
-        """Root of the downloaded BIRD data (contains question JSON + DBs)."""
+        """Root of the downloaded BIRD data (contains question JSON + DBs).
+
+        Defaults to ``<mini_dev_root>/llm/mini_dev_data``; a ``data_dir`` passed to
+        the constructor overrides it directly (used by the CLI ``--data-dir`` flag).
+        """
+        if self._data_dir_override is not None:
+            return self._data_dir_override
         return self.root / "llm" / "mini_dev_data"
 
     def question_json(self, split: str = "mini_dev_sqlite") -> Path:

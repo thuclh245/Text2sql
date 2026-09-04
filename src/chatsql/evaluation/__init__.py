@@ -1,6 +1,6 @@
 """Evaluation package."""
 
 from chatsql.evaluation.base import BaseEvaluator
-from chatsql.evaluation.bird import BirdEvaluatorAdapter
+from chatsql.evaluation.bird import BirdEXEvaluator
 
-__all__ = ["BaseEvaluator", "BirdEvaluatorAdapter"]
+__all__ = ["BaseEvaluator", "BirdEXEvaluator"]

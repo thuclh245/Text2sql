@@ -9,6 +9,7 @@ by introspecting the live SQLite database via PRAGMA queries.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from chatsql.domain.catalog import ColumnInfo, DatabaseCatalog, TableInfo
@@ -25,7 +26,7 @@ class BirdSchemaMapper:
         database_id = db_path.stem  # filename without extension
         tables: list[TableInfo] = []
 
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
 
@@ -103,11 +104,22 @@ class BirdSchemaMapper:
         return fk_map
 
 
-def load_all_catalogs(db_root: Path, db_ids: list[str]) -> dict[str, DatabaseCatalog]:
-    """Load catalogs for a list of database IDs from db_root/<db_id>/<db_id>.sqlite."""
+def load_catalogs(
+    db_root: Path, db_ids: list[str]
+) -> tuple[dict[str, DatabaseCatalog], list[str]]:
+    """Load catalogs for ``db_ids`` from ``db_root/<db_id>/<db_id>.sqlite``.
+
+    Returns ``(catalogs, failures)`` - one ``"<db_id>: <reason>"`` string per
+    database that could not be introspected - so a caller can abort before
+    spending an LLM budget instead of crashing mid-run.
+    """
     mapper = BirdSchemaMapper()
     catalogs: dict[str, DatabaseCatalog] = {}
+    failures: list[str] = []
     for db_id in db_ids:
         sqlite_path = db_root / db_id / f"{db_id}.sqlite"
-        catalogs[db_id] = mapper.load(sqlite_path)
-    return catalogs
+        try:
+            catalogs[db_id] = mapper.load(sqlite_path)
+        except Exception as exc:  # noqa: BLE001 - reported, not raised
+            failures.append(f"{db_id}: {exc}")
+    return catalogs, failures

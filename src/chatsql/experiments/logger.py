@@ -4,6 +4,8 @@ Output layout:
     runs/<run_id>/
     ├── manifest.json
     ├── predictions.jsonl
+    ├── context_views.jsonl
+    ├── raw_model_outputs.jsonl
     ├── executions.jsonl
     ├── metrics.json
     └── errors.jsonl
@@ -26,9 +28,17 @@ class RunLogger:
         self.run_dir.mkdir(parents=True, exist_ok=True)
 
         self._predictions_path = self.run_dir / "predictions.jsonl"
+        self._context_views_path = self.run_dir / "context_views.jsonl"
+        self._raw_outputs_path = self.run_dir / "raw_model_outputs.jsonl"
         self._executions_path = self.run_dir / "executions.jsonl"
         self._errors_path = self.run_dir / "errors.jsonl"
-        for path in (self._predictions_path, self._executions_path, self._errors_path):
+        for path in (
+            self._predictions_path,
+            self._context_views_path,
+            self._raw_outputs_path,
+            self._executions_path,
+            self._errors_path,
+        ):
             path.touch(exist_ok=True)
 
     # ------------------------------------------------------------------
@@ -47,6 +57,14 @@ class RunLogger:
     def log_prediction(self, record: dict[str, Any]) -> None:
         """Append one prediction record to predictions.jsonl."""
         self._append_jsonl(self._predictions_path, record)
+
+    def log_context_view(self, record: dict[str, Any]) -> None:
+        """Append one rendered LLM context to context_views.jsonl."""
+        self._append_jsonl(self._context_views_path, record)
+
+    def log_raw_output(self, record: dict[str, Any]) -> None:
+        """Append one raw model response to raw_model_outputs.jsonl (for auditing)."""
+        self._append_jsonl(self._raw_outputs_path, record)
 
     def log_execution(self, record: dict[str, Any]) -> None:
         """Append one execution record to executions.jsonl."""
@@ -74,6 +92,8 @@ class RunLogger:
         required = [
             "manifest.json",
             "predictions.jsonl",
+            "context_views.jsonl",
+            "raw_model_outputs.jsonl",
             "executions.jsonl",
             "metrics.json",
             "errors.jsonl",

@@ -48,7 +48,13 @@ Code changes for a task are done and you need to report them in the format doc 1
    `P1`, `task`, `final`, or `new2`, except when quoting source docs/backlog
    labels in prose.
 
-6. **Write the report** in exactly this shape (doc 15 §3):
+6. **Check runtime wiring.** If the task added a public CLI option, config key,
+   strategy, executor, evaluator, or logger artifact, verify one test or smoke
+   command exercises the real path. Do not approve a completion report while the
+   main run path still contains a placeholder stub or while a checked-in config
+   names identifiers the CLI cannot resolve.
+
+7. **Write the report** in exactly this shape (doc 15 §3):
    ```
    1. What changed
    2. Why it changed
@@ -60,10 +66,10 @@ Code changes for a task are done and you need to report them in the format doc 1
    ```
    Explain each technical term in a short parenthetical on first use.
 
-7. **Check the relevant DoD gate** in `docs/18_DEFINITION_OF_DONE.md` (v0.1–v1.0)
+8. **Check the relevant DoD gate** in `docs/18_DEFINITION_OF_DONE.md` (v0.1–v1.0)
    and state which gate criteria this task advances or completes.
 
-8. If a PR is expected, offer to write it — body ends with the required
+9. If a PR is expected, offer to write it — body ends with the required
    attribution line.
 
 ## Guardrails

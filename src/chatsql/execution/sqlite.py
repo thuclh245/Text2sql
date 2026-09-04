@@ -1,10 +1,11 @@
-"""Read-only SQLite executor with timeout and DML/DDL guard.
+"""Read-only SQLite executor with a hard timeout and a write/DDL guard.
 
-Requirements :
-  - read-only: open DB with `?mode=ro` URI flag
-  - timeout: hard limit via threading
-  - structured execution errors
-  - rejects all write statements (DDL/DML)
+Guarantees:
+  - the database is opened ``mode=ro`` and ``PRAGMA query_only = ON``;
+  - only a single read-only query runs (see ``execution.guard``);
+  - a query that overruns ``timeout_seconds`` is interrupted, not left running;
+  - every failure is reported as a structured ``ExecutionResult`` with an
+    ``error_kind`` the caller can aggregate on.
 """
 
 from __future__ import annotations
@@ -12,95 +13,95 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-import sqlglot
-from sqlglot import exp
-
 from chatsql.domain.result import ExecutionResult
 from chatsql.execution.base import BaseExecutor
+from chatsql.execution.guard import inspect_read_only
 
-_FORBIDDEN_EXPRESSIONS = (
-    exp.Insert,
-    exp.Update,
-    exp.Delete,
-    exp.Drop,
-    exp.Create,
-    exp.Alter,
-    exp.Command,
-)
+_INTERRUPT_GRACE_SECONDS = 5.0
 
 
 class ReadOnlySQLiteExecutor(BaseExecutor):
-    """Executes SELECT queries against a SQLite database in read-only mode."""
+    """Executes a single SELECT against ``<db_root>/<database_id>/<database_id>.sqlite``."""
 
     def __init__(
         self,
         db_root: Path,
         timeout_seconds: float = 30.0,
-        max_rows: int = 10_000,
+        row_limit: int = 10_000,
     ) -> None:
         self.db_root = db_root
         self.timeout_seconds = timeout_seconds
-        self.max_rows = max_rows
+        self.row_limit = row_limit
 
     def execute(self, sql: str, database_id: str, case_id: str) -> ExecutionResult:
-        """Execute SQL and return an ExecutionResult."""
-        # 1. Static guard: reject forbidden statements
-        guard_error = self._check_write_guard(sql)
-        if guard_error:
+        verdict = inspect_read_only(sql)
+        if not verdict.ok:
             return ExecutionResult(
                 case_id=case_id,
                 executed=False,
-                error=guard_error,
+                error=verdict.reason,
+                error_kind="invalid_sql" if verdict.is_parse_error else "rejected",
             )
 
-        # 2. Resolve DB path
         db_path = self.db_root / database_id / f"{database_id}.sqlite"
         if not db_path.exists():
             return ExecutionResult(
                 case_id=case_id,
                 executed=False,
                 error=f"Database file not found: {db_path}",
+                error_kind="missing_db",
             )
 
-        # 3. Execute with timeout
-        result_container: dict[str, Any] = {}
+        container: dict[str, Any] = {}
+        connection_box: dict[str, sqlite3.Connection] = {}
         start = time.monotonic()
         thread = threading.Thread(
             target=self._run_query,
-            args=(sql, db_path, result_container),
+            args=(sql, db_path, container, connection_box),
             daemon=True,
         )
         thread.start()
         thread.join(timeout=self.timeout_seconds)
-        elapsed = time.monotonic() - start
 
         if thread.is_alive():
+            connection = connection_box.get("connection")
+            if connection is not None:
+                connection.interrupt()
+            thread.join(timeout=_INTERRUPT_GRACE_SECONDS)
             return ExecutionResult(
                 case_id=case_id,
                 executed=False,
                 error=f"Execution timed out after {self.timeout_seconds:.1f}s",
-                execution_time_seconds=elapsed,
+                error_kind="timeout",
+                execution_time_seconds=time.monotonic() - start,
             )
 
-        if "error" in result_container:
+        elapsed = time.monotonic() - start
+        if "error" in container:
             return ExecutionResult(
                 case_id=case_id,
                 executed=False,
-                error=result_container["error"],
+                error=container["error"],
+                error_kind="runtime_error",
                 execution_time_seconds=elapsed,
             )
 
-        rows: list[list[Any]] = result_container.get("rows", [])
-        if len(rows) > self.max_rows:
-            rows = rows[: self.max_rows]
+        rows: list[list[Any]] = container.get("rows", [])
+        row_count = len(rows)
+        truncated = row_count > self.row_limit
+        if truncated:
+            rows = rows[: self.row_limit]
 
         return ExecutionResult(
             case_id=case_id,
             executed=True,
             rows=rows,
+            row_count=row_count,
+            truncated=truncated,
             execution_time_seconds=elapsed,
         )
 
@@ -108,36 +109,21 @@ class ReadOnlySQLiteExecutor(BaseExecutor):
     # Internals
     # ------------------------------------------------------------------
 
+    @staticmethod
     def _run_query(
-        self,
         sql: str,
         db_path: Path,
         result: dict[str, Any],
+        connection_box: dict[str, sqlite3.Connection],
     ) -> None:
-        """Run the query in a thread; write rows or error into `result`."""
+        """Run the query in a worker thread; publish rows or an error string."""
         try:
             uri = f"file:{db_path}?mode=ro"
-            with sqlite3.connect(uri, uri=True) as conn:
+            with closing(sqlite3.connect(uri, uri=True)) as conn:
+                connection_box["connection"] = conn
                 conn.execute("PRAGMA query_only = ON")
-                cur = conn.cursor()
-                cur.execute(sql)
-                rows = [list(row) for row in cur.fetchall()]
-            result["rows"] = rows
-        except Exception as exc:
+                cursor = conn.cursor()
+                cursor.execute(sql)
+                result["rows"] = [list(row) for row in cursor.fetchall()]
+        except Exception as exc:  # noqa: BLE001 - surfaced as a structured error
             result["error"] = str(exc)
-
-    @staticmethod
-    def _check_write_guard(sql: str) -> str | None:
-        """Return an error string if the SQL contains forbidden operations."""
-        try:
-            parsed = sqlglot.parse_one(sql, read="sqlite")
-        except sqlglot.errors.ParseError as exc:
-            return f"SQL parse error: {exc}"
-        if parsed is None:
-            return "SQL parse error: empty statement"
-        if not isinstance(parsed, exp.Query):
-            return "Write/DDL statement rejected by read-only guard"
-        for expression_type in _FORBIDDEN_EXPRESSIONS:
-            if parsed.find(expression_type):
-                return "Write/DDL statement rejected by read-only guard"
-        return None

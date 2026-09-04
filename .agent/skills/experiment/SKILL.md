@@ -43,23 +43,32 @@ only interpretable if exactly one variable changed and no gold data leaked.
    The ID must describe the benchmark/system/change being tested, not the
    roadmap position. Good: `bird_mini_dev_sqlite_full_schema_control`,
    `lite_sql_reproduced_bird_mini_dev`, `fk_closure_retrieval_ablation`.
-   Bad for runtime artifacts: `phase_1`, `p1_run`, `task_35`, `new_test`.
+   Bad for runtime artifacts: names based mainly on roadmap position, handoff
+   number, recency, or temporary status.
 
 4. **State the result-directory contract** the run must emit (doc 04 §6):
-   `config.yaml`, `manifest.json`, `predictions.jsonl`, `metrics.json`,
-   `errors.jsonl`, `environment.json`, `README.md` under `runs/<experiment_id>/...`.
+   `config.yaml`, `manifest.json`, `predictions.jsonl`, `context_views.jsonl`,
+   `raw_model_outputs.jsonl`, `executions.jsonl`, `metrics.json`, `errors.jsonl`,
+   `environment.json`, `README.md` under `runs/<experiment_id>/...`.
    `environment.json` records git commit, dirty flag, OS, Python, CUDA/driver,
    dependency lock hash, model/checkpoint, dataset hash, evaluator hash, seed.
 
-5. **Leakage guard** (doc 06 §2): inference sees only question, db id,
+5. **Verify runnable wiring before declaring the scaffold done.** Every configured
+   runtime component must be reachable by its public identifier: benchmark ID,
+   strategy name, model provider, executor, evaluator, and output logger. Do not
+   leave placeholder stubs on the main run path. If a config names a strategy,
+   route through the registry using that name; if a command documents a benchmark
+   ID, the CLI must accept exactly that ID.
+
+6. **Leakage guard** (doc 06 §2): inference sees only question, db id,
    benchmark-permitted evidence, policy-allowed metadata. Gold SQL/tables/columns/
    result are evaluation-only. Confirm `tests/leakage/` covers this path.
 
-6. **Pick metrics** from doc 06 §6 (EX via official evaluator + R-VES/Soft F1 when
+7. **Pick metrics** from doc 06 §6 (EX via official evaluator + R-VES/Soft F1 when
    using official BIRD Mini-Dev; retrieval recall/FPR; relationship path metrics;
    system cost). Name a primary and secondaries.
 
-7. **Write the experiment doc** to `research/hypotheses/` or `research/reports/` as
+8. **Write the experiment doc** to `research/hypotheses/` or `research/reports/` as
    appropriate; link the config path. If the experiment claims an improvement,
    remind the user of the 7-point acceptance rule (doc 06 §7).
 
@@ -72,3 +81,7 @@ only interpretable if exactly one variable changed and no gold data leaked.
 - Roadmap labels such as `E3`, `P1`, or `T35` can be cited in prose, but they
   must not be the primary name for configs, runs, benchmark identifiers, public
   parameters, or result directories.
+- Before handing off an experiment, run a naming scan over changed configs,
+  commands, tests, and artifact paths. Replace vague labels like `phase`, `p1`,
+  `task`, `final`, `new`, and `temp` with domain-role names that describe the
+  benchmark, system, or controlled variable.
