@@ -9,10 +9,10 @@ from typing import Annotated, Any
 
 import typer
 
-import chatsql.strategies  # noqa: F401 - imported for @register side effects
 import chatsql.grounding.full_schema  # noqa: F401 - imported for @register side effects
 import chatsql.grounding.lite_sql_adapter  # noqa: F401 - imported for @register side effects
 import chatsql.grounding.simple_dense  # noqa: F401 - imported for @register side effects
+import chatsql.strategies  # noqa: F401 - imported for @register side effects
 from chatsql import __version__
 from chatsql.benchmarks.bird import BirdLoader, BirdPaths, BirdValidator, load_catalogs
 from chatsql.config.loader import load_and_hash
@@ -21,8 +21,11 @@ from chatsql.execution import ReadOnlySQLiteExecutor
 from chatsql.experiments.logger import RunLogger
 from chatsql.experiments.manifest import build_manifest
 from chatsql.experiments.registry import get_strategy, list_strategies
-from chatsql.experiments.runner import ExperimentRunner
+from chatsql.experiments.runner import ExperimentRunner, _project_catalog
 from chatsql.generation.llm_client import build_llm_client
+from chatsql.generation.pricing import estimate_cost_usd
+from chatsql.generation.prompt_builder import FullSchemaPromptBuilder
+from chatsql.generation.token_estimator import estimate_chat_prompt_tokens
 from chatsql.grounding.registry import get_grounder, list_grounders
 from chatsql.provenance import sha256_file, short_hash
 
@@ -221,6 +224,91 @@ def experiment_run(
     score = (correct / total * 100) if total else 0.0
     typer.echo(f"Results: {correct}/{total} correct ({score:.1f}% EX)")
     typer.echo(f"Artifacts: {logger.run_dir}")
+
+
+@experiment_app.command("estimate-tokens")
+def experiment_estimate_tokens(
+    benchmark: Annotated[str, typer.Option("--benchmark", help="Benchmark identifier.")],
+    strategy: Annotated[str, typer.Option("--strategy", help="Registered strategy name.")],
+    config: Annotated[Path, typer.Option("--config", help="Path to experiment YAML config.")],
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Estimate only the first N cases."),
+    ] = None,
+) -> None:
+    """Estimate prompt/output tokens for an experiment without calling a model."""
+    cfg, cfg_hash = load_and_hash(config)
+    benchmark = _normalize_benchmark(benchmark)
+    strategy = _normalize_strategy(strategy)
+    if strategy != "full_schema":
+        raise typer.BadParameter("token estimation currently supports strategy=full_schema")
+    _cross_check_config_benchmark(cfg, benchmark)
+    _cross_check_config_strategy(cfg, strategy)
+
+    benchmark_cfg = cfg.get("benchmark", {})
+    model_cfg = cfg.get("model", {})
+    grounder_cfg = cfg.get("grounder", {"name": "full-schema"})
+    paths = BirdPaths.from_repo_root()
+    split = benchmark_cfg.get("split", "mini_dev_sqlite")
+    select_only = benchmark_cfg.get("select_only", True)
+
+    cases, _ = BirdLoader(paths).load_from_split(split, select_only=select_only)
+    if limit is not None:
+        cases = cases[:limit]
+    if not cases:
+        typer.echo("No cases to estimate.")
+        raise typer.Exit(code=1)
+
+    db_ids = sorted({case.database_id for case in cases})
+    catalogs, catalog_failures = load_catalogs(paths.db_root(), db_ids)
+    if catalog_failures:
+        typer.echo("Catalog load failed for:\n  " + "\n  ".join(catalog_failures))
+        raise typer.Exit(code=1)
+
+    grounder_name = _normalize_grounder(_require_config_value(grounder_cfg, "grounder.name"))
+    grounder = _build_grounder(grounder_name, grounder_cfg)
+    model_name = model_cfg.get("name", "gpt-4o-mini")
+    max_completion_tokens = int(model_cfg.get("max_tokens", 1024))
+    prompt_builder = FullSchemaPromptBuilder()
+
+    prompt_tokens_total = 0
+    total_tokens_total = 0
+    estimated_cost_total = 0.0
+    cost_unknown = 0
+    largest_case: tuple[str, int] = ("", 0)
+
+    for case in cases:
+        catalog = catalogs[case.database_id]
+        grounded_catalog = _project_catalog(catalog, grounder.ground(case, catalog))
+        prompt, _ = prompt_builder.build(case, grounded_catalog)
+        prompt_tokens = estimate_chat_prompt_tokens(prompt, model_name)
+        total_tokens = prompt_tokens + max_completion_tokens
+        prompt_tokens_total += prompt_tokens
+        total_tokens_total += total_tokens
+        if prompt_tokens > largest_case[1]:
+            largest_case = (case.case_id, prompt_tokens)
+
+        cost = estimate_cost_usd(model_name, prompt_tokens, max_completion_tokens)
+        if cost is None:
+            cost_unknown += 1
+        else:
+            estimated_cost_total += cost
+
+    count = len(cases)
+    typer.echo(f"Config hash: {short_hash(cfg_hash)}")
+    typer.echo(f"Cases estimated: {count}")
+    typer.echo(f"Model: {model_name}")
+    typer.echo(f"Grounder: {grounder_name}")
+    typer.echo(f"Max completion tokens/call: {max_completion_tokens}")
+    typer.echo(f"Prompt tokens estimated: {prompt_tokens_total}")
+    typer.echo(f"Mean prompt tokens/call: {prompt_tokens_total / count:.1f}")
+    typer.echo(f"Total tokens estimated: {total_tokens_total}")
+    typer.echo(f"Mean total tokens/call: {total_tokens_total / count:.1f}")
+    typer.echo(f"Largest prompt case: {largest_case[0]} ({largest_case[1]} tokens)")
+    if cost_unknown:
+        typer.echo("Estimated cost: unknown for this model")
+    else:
+        typer.echo(f"Estimated cost before call: ${estimated_cost_total:.6f}")
 
 
 # ---------------------------------------------------------------------------

@@ -58,6 +58,10 @@ class _RunAggregator:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.schema_tokens = 0
+        self.prompt_tokens_estimated = 0
+        self.estimated_total_tokens = 0
+        self.estimated_cost_usd_before_call = 0.0
+        self.cost_preflight_unknown = 0
         self.cost_usd = 0.0
         self.cost_unknown = 0
 
@@ -71,6 +75,17 @@ class _RunAggregator:
         self.prompt_tokens += prediction.prompt_tokens or 0
         self.completion_tokens += prediction.completion_tokens or 0
         self.schema_tokens += int(prediction.metadata.get("schema_token_estimate") or 0)
+        self.prompt_tokens_estimated += int(
+            prediction.metadata.get("prompt_tokens_estimated") or 0
+        )
+        self.estimated_total_tokens += int(
+            prediction.metadata.get("estimated_total_tokens") or 0
+        )
+        preflight_cost = prediction.metadata.get("estimated_cost_usd_before_call")
+        if preflight_cost is None:
+            self.cost_preflight_unknown += 1
+        else:
+            self.estimated_cost_usd_before_call += float(preflight_cost)
 
         cost = estimate_cost_usd(
             self._model_name, prediction.prompt_tokens, prediction.completion_tokens
@@ -110,6 +125,18 @@ class _RunAggregator:
             "sum_prompt_tokens": self.prompt_tokens,
             "sum_completion_tokens": self.completion_tokens,
             "sum_schema_context_tokens": self.schema_tokens,
+            "sum_prompt_tokens_estimated": self.prompt_tokens_estimated,
+            "mean_prompt_tokens_estimated": round(
+                self.prompt_tokens_estimated / scored, 3
+            ),
+            "sum_total_tokens_estimated_preflight": self.estimated_total_tokens,
+            "mean_total_tokens_estimated_preflight": round(
+                self.estimated_total_tokens / scored, 3
+            ),
+            "estimated_cost_usd_before_call": round(
+                self.estimated_cost_usd_before_call, 6
+            ),
+            "cost_preflight_estimate_complete": self.cost_preflight_unknown == 0,
             "estimated_cost_usd": round(self.cost_usd, 6),
             "cost_estimate_complete": self.cost_unknown == 0,
         }

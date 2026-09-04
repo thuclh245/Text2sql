@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from chatsql.domain.catalog import DatabaseCatalog
 from chatsql.domain.inference_case import InferenceCase
+from chatsql.generation.token_estimator import estimate_chat_prompt_tokens
 from chatsql.generation.types import ContextView
 
 PROMPT_VERSION = "v1-full-schema-2026-09-04"
@@ -91,6 +92,6 @@ class FullSchemaPromptBuilder:
             schema_text=schema_text,
             question=case.question,
             evidence_text=evidence_text,
-            token_estimate=len(prompt.split()),
+            token_estimate=estimate_chat_prompt_tokens(prompt),
         )
         return prompt, context

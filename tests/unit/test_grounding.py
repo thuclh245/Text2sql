@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import pytest
 
+import chatsql.grounding.full_schema  # noqa: F401 - imported for @register side effects
+import chatsql.grounding.lite_sql_adapter  # noqa: F401 - imported for @register side effects
+import chatsql.grounding.simple_dense  # noqa: F401 - imported for @register side effects
 from chatsql.domain.catalog import ColumnInfo, DatabaseCatalog, TableInfo
 from chatsql.domain.gold_case import GoldCase
 from chatsql.domain.inference_case import InferenceCase
 from chatsql.evaluation.retrieval import RetrievalEvaluator
-import chatsql.grounding.full_schema  # noqa: F401 - imported for @register side effects
-import chatsql.grounding.lite_sql_adapter  # noqa: F401 - imported for @register side effects
-import chatsql.grounding.simple_dense  # noqa: F401 - imported for @register side effects
 from chatsql.grounding.full_schema import FullSchemaGrounder
 from chatsql.grounding.lite_sql_adapter import LitESQLGrounderAdapter
 from chatsql.grounding.registry import get_grounder, list_grounders

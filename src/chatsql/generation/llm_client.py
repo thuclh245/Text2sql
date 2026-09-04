@@ -31,6 +31,11 @@ class BaseLLMClient(abc.ABC):
     @abc.abstractmethod
     def provider(self) -> str: ...
 
+    @property
+    def max_completion_tokens(self) -> int | None:
+        """Configured output token budget, if known before the call."""
+        return None
+
 
 class OpenAIClient(BaseLLMClient):
     """OpenAI-compatible chat completion client.
@@ -91,6 +96,10 @@ class OpenAIClient(BaseLLMClient):
     def provider(self) -> str:
         return "openai"
 
+    @property
+    def max_completion_tokens(self) -> int | None:
+        return self._max_tokens
+
 
 class StubLLMClient(BaseLLMClient):
     """Deterministic stub client for testing — never calls an external API."""
@@ -114,6 +123,10 @@ class StubLLMClient(BaseLLMClient):
     @property
     def provider(self) -> str:
         return "stub"
+
+    @property
+    def max_completion_tokens(self) -> int | None:
+        return None
 
 
 def build_llm_client(model_config: dict[str, Any]) -> BaseLLMClient:

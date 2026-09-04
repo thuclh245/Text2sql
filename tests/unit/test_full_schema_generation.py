@@ -9,6 +9,7 @@ from chatsql.domain.inference_case import InferenceCase
 from chatsql.generation.llm_client import StubLLMClient
 from chatsql.generation.parser import extract_sql
 from chatsql.generation.prompt_builder import PROMPT_VERSION, FullSchemaPromptBuilder
+from chatsql.generation.token_estimator import estimate_chat_prompt_tokens
 from chatsql.strategies.full_schema import FullSchemaStrategy
 
 # ---------------------------------------------------------------------------
@@ -110,6 +111,10 @@ class TestPromptBuilder:
         assert "products" in context.schema_text
         assert context.question == simple_case.question
         assert context.token_estimate is not None
+        assert context.token_estimate > 0
+
+    def test_token_estimator_counts_chat_prompt(self) -> None:
+        assert estimate_chat_prompt_tokens("SELECT * FROM products", "gpt-4o-mini") > 4
 
     def test_prompt_version_constant(self) -> None:
         assert PROMPT_VERSION != ""
@@ -156,6 +161,10 @@ class TestFullSchemaStrategy:
 
         assert pred.metadata.get("database_id") == "shop"
         assert pred.metadata.get("prompt_version") == PROMPT_VERSION
+        assert pred.metadata.get("prompt_tokens_estimated") > 0
+        assert pred.metadata.get("estimated_total_tokens") >= pred.metadata.get(
+            "prompt_tokens_estimated"
+        )
         assert "raw_response" in pred.metadata
 
     def test_strategy_registered(self) -> None:
