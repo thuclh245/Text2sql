@@ -6,12 +6,14 @@ This test satisfies the P0 exit gate requirement:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from chatsql.domain.catalog import ColumnInfo, DatabaseCatalog, TableInfo
+from chatsql.domain.gold_case import GoldCase
 from chatsql.domain.inference_case import InferenceCase
 from chatsql.domain.result import Prediction
 from chatsql.experiments.logger import RunLogger
@@ -59,15 +61,12 @@ def simple_catalog() -> DatabaseCatalog:
 
 
 @pytest.fixture()
-def cases_and_golds() -> tuple[list[InferenceCase], list[dict[str, Any]]]:
+def cases_and_golds() -> tuple[list[InferenceCase], list[GoldCase]]:
     cases = [
         InferenceCase(case_id=f"q{i}", question=f"Question {i}", database_id="shop")
         for i in range(3)
     ]
-    golds = [
-        {"gold_sql": f"SELECT {i} FROM orders", "gold_tables": ["orders"], "gold_columns": []}
-        for i in range(3)
-    ]
+    golds = [GoldCase(case_id=f"q{i}", gold_sql=f"SELECT {i} FROM orders") for i in range(3)]
     return cases, golds
 
 
@@ -126,8 +125,6 @@ class TestDummyExperiment:
         simple_catalog: DatabaseCatalog,
     ) -> None:
         """manifest.json must contain the experiment ID."""
-        import json
-
         run_id = "manifest-capture-test"
         manifest = build_manifest(
             experiment_id=run_id,
@@ -144,7 +141,7 @@ class TestDummyExperiment:
         )
 
         cases = [InferenceCase(case_id="q0", question="How many?", database_id="shop")]
-        golds = [{"gold_sql": "SELECT COUNT(*) FROM orders", "gold_tables": [], "gold_columns": []}]
+        golds = [GoldCase(case_id="q0", gold_sql="SELECT COUNT(*) FROM orders")]
 
         logger = RunLogger(runs_root=tmp_path, run_id=run_id)
         runner = ExperimentRunner(
@@ -158,3 +155,81 @@ class TestDummyExperiment:
         assert manifest_data["experiment"]["id"] == run_id
         assert manifest_data["experiment"]["seed"] == 7
         assert manifest_data["benchmark"]["name"] == "BIRD"
+
+    def test_case_gold_mismatch_fails_fast(
+        self,
+        tmp_path: Path,
+        simple_catalog: DatabaseCatalog,
+    ) -> None:
+        manifest = build_manifest(
+            experiment_id="mismatch-test",
+            seed=0,
+            benchmark_name="BIRD",
+            benchmark_revision="test",
+            benchmark_data_hash="h",
+            evaluator_revision="e",
+            strategy_name="Dummy",
+            model_provider="stub",
+            model_name="stub",
+            model_revision="v0",
+            model_temperature=0.0,
+        )
+        runner = ExperimentRunner(
+            strategy=DummyStrategy(),
+            evaluator=DummyEvaluator(),
+            logger=RunLogger(runs_root=tmp_path, run_id="mismatch-test"),
+        )
+
+        with pytest.raises(ValueError, match="case/gold mismatch"):
+            runner.run(
+                manifest=manifest,
+                cases=[InferenceCase(case_id="q0", question="Q?", database_id="shop")],
+                golds=[GoldCase(case_id="q1", gold_sql="SELECT 1")],
+                catalogs={"shop": simple_catalog},
+            )
+
+    def test_strategy_failure_still_emits_record(
+        self,
+        tmp_path: Path,
+        simple_catalog: DatabaseCatalog,
+    ) -> None:
+        class FailingStrategy(BaseStrategy):
+            def run(self, case: InferenceCase, catalog: DatabaseCatalog) -> Prediction:
+                raise RuntimeError("boom")
+
+        manifest = build_manifest(
+            experiment_id="failure-record-test",
+            seed=0,
+            benchmark_name="BIRD",
+            benchmark_revision="test",
+            benchmark_data_hash="h",
+            evaluator_revision="e",
+            strategy_name="Failing",
+            model_provider="stub",
+            model_name="stub",
+            model_revision="v0",
+            model_temperature=0.0,
+        )
+        logger = RunLogger(runs_root=tmp_path, run_id="failure-record-test")
+        runner = ExperimentRunner(
+            strategy=FailingStrategy(),
+            evaluator=DummyEvaluator(),
+            logger=logger,
+        )
+
+        records = runner.run(
+            manifest=manifest,
+            cases=[InferenceCase(case_id="q0", question="Q?", database_id="shop")],
+            golds=[GoldCase(case_id="q0", gold_sql="SELECT 1")],
+            catalogs={"shop": simple_catalog},
+        )
+
+        assert len(records) == 1
+        assert records[0].case_id == "q0"
+        assert records[0].executed is False
+        assert records[0].execution_correct is False
+        assert records[0].error == "boom"
+
+        metrics = json.loads((tmp_path / "failure-record-test" / "metrics.json").read_text())
+        assert metrics["total"] == 1
+        assert metrics["errors"] == 1

@@ -12,6 +12,7 @@ import abc
 from typing import Any
 
 from chatsql.domain.catalog import DatabaseCatalog
+from chatsql.domain.gold_case import GoldCase
 from chatsql.domain.inference_case import InferenceCase
 from chatsql.domain.result import ExecutionResult, ExperimentRecord, Prediction
 from chatsql.experiments.logger import RunLogger
@@ -74,7 +75,7 @@ class ExperimentRunner:
         manifest: ExperimentManifest,
         cases: list[InferenceCase],
         # gold is a parallel list — evaluator-only access
-        golds: list[dict[str, Any]],
+        golds: list[GoldCase],
         catalogs: dict[str, DatabaseCatalog],
     ) -> list[ExperimentRecord]:
         """Execute all cases, log every artifact, return ExperimentRecords."""
@@ -83,16 +84,33 @@ class ExperimentRunner:
         records: list[ExperimentRecord] = []
         aggregate_metrics: dict[str, Any] = {"total": 0, "executed": 0, "errors": 0}
 
-        for case, gold_dict in zip(cases, golds, strict=True):
-            catalog = catalogs[case.database_id]
+        for case, gold in zip(cases, golds, strict=True):
+            if case.case_id != gold.case_id:
+                raise ValueError(
+                    f"case/gold mismatch: inference case {case.case_id!r} "
+                    f"paired with gold case {gold.case_id!r}"
+                )
+
+            aggregate_metrics["total"] += 1
 
             # --- Strategy phase (zero gold access) ---
             try:
+                catalog = catalogs[case.database_id]
                 prediction = self.strategy.run(case, catalog)
             except Exception as exc:
                 self.logger.log_error(
                     {"case_id": case.case_id, "phase": "strategy", "error": str(exc)}
                 )
+                record = ExperimentRecord(
+                    case_id=case.case_id,
+                    database_id=case.database_id,
+                    question=case.question,
+                    predicted_sql="",
+                    executed=False,
+                    execution_correct=False,
+                    error=str(exc),
+                )
+                records.append(record)
                 aggregate_metrics["errors"] += 1
                 continue
 
@@ -110,9 +128,9 @@ class ExperimentRunner:
             metrics = self.evaluator.evaluate(
                 prediction=prediction,
                 execution=execution,
-                gold_sql=gold_dict.get("gold_sql", ""),
-                gold_tables=tuple(gold_dict.get("gold_tables", [])),
-                gold_columns=tuple(gold_dict.get("gold_columns", [])),
+                gold_sql=gold.gold_sql,
+                gold_tables=gold.gold_tables,
+                gold_columns=gold.gold_columns,
             )
 
             record = ExperimentRecord(
@@ -127,7 +145,6 @@ class ExperimentRunner:
                 metadata=metrics,
             )
             records.append(record)
-            aggregate_metrics["total"] += 1
             if execution.executed:
                 aggregate_metrics["executed"] += 1
 

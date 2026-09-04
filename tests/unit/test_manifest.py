@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
+from pathlib import Path
+
+import pytest
 
 from chatsql.experiments.manifest import (
     BenchmarkMeta,
@@ -133,3 +137,32 @@ class TestBuildManifest:
         assert len(m.manifest_hash()) == 64
         assert m.environment.python != ""
         assert m.environment.os != ""
+
+    def test_lock_hash_uses_repo_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        lock_file = repo_root / "uv.lock"
+        lock_file.write_text("locked", encoding="utf-8")
+
+        other_dir = tmp_path / "elsewhere"
+        other_dir.mkdir()
+        monkeypatch.chdir(other_dir)
+
+        m = build_manifest(
+            experiment_id="test-run-002",
+            seed=0,
+            benchmark_name="BIRD",
+            benchmark_revision="v1",
+            benchmark_data_hash="abc",
+            evaluator_revision="ev1",
+            strategy_name="DummyStrategy",
+            model_provider="openai",
+            model_name="gpt-4o-mini",
+            model_revision="2024-07-18",
+            model_temperature=0.0,
+            repo_root=repo_root,
+        )
+
+        assert m.environment.dependency_lock_hash == hashlib.sha256(b"locked").hexdigest()

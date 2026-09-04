@@ -172,10 +172,11 @@ def build_manifest(
         lock_hash = _hash_file(lock_file)
     else:
         # Try to find uv.lock or requirements.lock next to pyproject.toml
+        base_dir = repo_root if repo_root is not None else Path.cwd()
         candidates = [
-            Path("uv.lock"),
-            Path("requirements.lock"),
-            Path("poetry.lock"),
+            base_dir / "uv.lock",
+            base_dir / "requirements.lock",
+            base_dir / "poetry.lock",
         ]
         for c in candidates:
             if c.exists():

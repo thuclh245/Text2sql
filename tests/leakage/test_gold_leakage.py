@@ -59,6 +59,16 @@ def test_inference_case_has_no_gold_columns_field() -> None:
         )
 
 
+def test_inference_case_evidence_cannot_contain_gold_fields() -> None:
+    with pytest.raises(ValidationError):
+        InferenceCase(
+            case_id="c1",
+            question="How many users?",
+            database_id="db1",
+            evidence={"source": "fixture", "labels": [{"gold_tables": ["users"]}]},
+        )
+
+
 def test_inference_case_is_immutable() -> None:
     """InferenceCase must be frozen (immutable) to prevent runtime leakage."""
     case = InferenceCase(case_id="c1", question="Q?", database_id="db1")

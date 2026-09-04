@@ -1,7 +1,7 @@
 PYTHON ?= .venv/bin/python
 UV ?= .venv/bin/uv
 
-.PHONY: install test lint typecheck check
+.PHONY: install test lint format-check typecheck check
 
 install:
 	python3 -m venv .venv
@@ -14,7 +14,10 @@ test:
 lint:
 	.venv/bin/ruff check .
 
+format-check:
+	.venv/bin/ruff format --check .
+
 typecheck:
 	.venv/bin/mypy src/chatsql
 
-check: lint typecheck test
+check: lint format-check typecheck test

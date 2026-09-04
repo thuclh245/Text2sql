@@ -48,6 +48,15 @@ class TestInferenceCase:
                 gold_sql="SELECT 1",
             )
 
+    def test_rejects_gold_fields_inside_evidence(self) -> None:
+        with pytest.raises(ValidationError):
+            InferenceCase(
+                case_id="c1",
+                question="Q?",
+                database_id="db1",
+                evidence={"nested": {"gold_sql": "SELECT 1"}},
+            )
+
 
 # ---------------------------------------------------------------------------
 # GoldCase

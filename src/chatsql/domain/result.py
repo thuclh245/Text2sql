@@ -18,7 +18,7 @@ class Prediction(BaseModel):
     latency_seconds: float | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecutionResult(BaseModel):
@@ -29,7 +29,7 @@ class ExecutionResult(BaseModel):
     case_id: str
     executed: bool
     """False if the SQL raised an error."""
-    rows: list[list[Any]] = []
+    rows: list[list[Any]] = Field(default_factory=list)
     error: str | None = None
     execution_time_seconds: float | None = None
 
@@ -48,7 +48,7 @@ class ExperimentRecord(BaseModel):
     """True if predicted result matches gold result (EX metric)."""
     error: str | None = None
     latency_seconds: float | None = None
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime.datetime = Field(
         default_factory=lambda: datetime.datetime.now(datetime.UTC)
     )

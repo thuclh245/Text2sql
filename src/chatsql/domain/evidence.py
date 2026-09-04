@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Evidence(BaseModel):
@@ -19,5 +19,5 @@ class Evidence(BaseModel):
     text: str
     """Human-readable hint, e.g. extracted from the BIRD evidence field."""
 
-    metadata: dict[str, Any] = {}
+    metadata: dict[str, Any] = Field(default_factory=dict)
     """Optional structured key-value pairs attached to the hint."""

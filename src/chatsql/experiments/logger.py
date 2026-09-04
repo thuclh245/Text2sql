@@ -63,9 +63,7 @@ class RunLogger:
     def write_metrics(self, metrics: dict[str, Any]) -> None:
         """Write final aggregated metrics to metrics.json."""
         path = self.run_dir / "metrics.json"
-        path.write_text(
-            json.dumps(metrics, sort_keys=True, indent=2), encoding="utf-8"
-        )
+        path.write_text(json.dumps(metrics, sort_keys=True, indent=2), encoding="utf-8")
 
     # ------------------------------------------------------------------
     # Completeness check
