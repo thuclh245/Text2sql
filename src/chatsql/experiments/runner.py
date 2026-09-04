@@ -363,7 +363,7 @@ def _project_catalog(catalog: DatabaseCatalog, grounding: GroundingResult) -> Da
     for table in catalog.tables:
         if table.name not in selected_tables:
             continue
-        selected_columns = selected_columns_by_table.get(table.name)
+        selected_columns = selected_columns_by_table.get(table.name) or set()
         columns = tuple(column for column in table.columns if column.name in selected_columns)
         projected_tables.append(
             TableInfo(

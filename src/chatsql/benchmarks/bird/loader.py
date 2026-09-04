@@ -57,8 +57,13 @@ class BirdLoader:
         cases: list[InferenceCase] = []
         golds: dict[str, GoldCase] = {}
 
+        seen_ids: dict[str, int] = {}
         for rec in raw_records:
-            case_id = self._make_case_id(rec)
+            base_id = self._make_case_id(rec)
+            count = seen_ids.get(base_id, 0)
+            seen_ids[base_id] = count + 1
+            case_id = base_id if count == 0 else f"{base_id}_{count + 1}"
+
             gold_sql = rec.get("SQL", "").strip()
 
             if select_only and not self._is_select(gold_sql):

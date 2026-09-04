@@ -66,6 +66,17 @@ class BirdPaths:
 
     def db_root(self) -> Path:
         """Root directory containing per-database subdirectories."""
+        candidates = (
+            "databases",
+            "dev_databases",
+            "mini_dev_databases",
+            "train_databases",
+            "dev_20240627/dev_databases",
+        )
+        for candidate in candidates:
+            p = self.data_dir / candidate
+            if p.is_dir():
+                return p
         return self.data_dir / "databases"
 
     def sqlite_path(self, db_id: str) -> Path:
