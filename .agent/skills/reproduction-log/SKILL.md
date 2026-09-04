@@ -49,3 +49,6 @@ deviation documented (doc 04 §4).
 - B0 and a reproduced baseline are comparable only where settings actually match.
 - Do not rely on a mutable remote `main` for the dataset or upstream code (doc 12
   §7) — pin everything.
+- Name reproduction artifacts by system, benchmark, and role
+  (`lite_sql_reproduced_bird_mini_dev`, `chess_original_spider`) rather than
+  roadmap labels such as `phase`, `P2`, or `task`.

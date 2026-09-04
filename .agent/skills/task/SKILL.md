@@ -51,6 +51,12 @@ task in this repo must use `docs/templates/TASK_TEMPLATE.md` and satisfy
 3. **Apply the naming policy** (doc 12 §8): scientific-role names
    (`full_schema_control`, `lite_sql_reproduced`, `chatsql_grounder_v1`), never
    `best`, `final`, `new2`.
+   For files, configs, run IDs, benchmark IDs, test fixtures, and public
+   parameters, use names that describe the domain role or controlled variable
+   (`bird_mini_dev_sqlite_select_500`, `foundation_dummy_run`,
+   `full_schema_control`). Do not name runtime artifacts after roadmap labels
+   like `phase`, `P0`, `P1`, `task`, or `step`; those labels may appear only when
+   quoting source docs/backlog text.
 
 4. **Write the file** to `docs/tasks/<ID-or-slug>.md` (create `docs/tasks/` if
    needed). Keep the template's "Completion report format" block so the agent knows
@@ -65,3 +71,6 @@ task in this repo must use `docs/templates/TASK_TEMPLATE.md` and satisfy
   suffice.
 - If acceptance can't be made concrete, say so and ask the user rather than
   shipping a vague task.
+- Before handing off, scan newly introduced paths, identifiers, config keys, and
+  test names for vague roadmap labels (`phase`, `P0`, `P1`, `final`, `new2`) and
+  rename them to scientific-role names.

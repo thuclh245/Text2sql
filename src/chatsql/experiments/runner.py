@@ -93,13 +93,13 @@ class ExperimentRunner:
 
             aggregate_metrics["total"] += 1
 
-            # --- Strategy phase (zero gold access) ---
+            # --- Strategy step (zero gold access) ---
             try:
                 catalog = catalogs[case.database_id]
                 prediction = self.strategy.run(case, catalog)
             except Exception as exc:
                 self.logger.log_error(
-                    {"case_id": case.case_id, "phase": "strategy", "error": str(exc)}
+                    {"case_id": case.case_id, "component": "strategy", "error": str(exc)}
                 )
                 record = ExperimentRecord(
                     case_id=case.case_id,
@@ -116,15 +116,15 @@ class ExperimentRunner:
 
             self.logger.log_prediction(prediction.model_dump())
 
-            # --- Execution stub (P1 will replace with real executor) ---
+            # --- Execution stub (benchmark executors replace this in later work) ---
             execution = ExecutionResult(
                 case_id=case.case_id,
                 executed=False,
-                error="Executor not implemented in P0",
+                error="Executor not implemented in the foundation runner",
             )
             self.logger.log_execution(execution.model_dump())
 
-            # --- Evaluator phase (receives gold) ---
+            # --- Evaluator step (receives gold) ---
             metrics = self.evaluator.evaluate(
                 prediction=prediction,
                 execution=execution,

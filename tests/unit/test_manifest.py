@@ -1,4 +1,4 @@
-"""Unit tests for ExperimentManifest (P0-T03)."""
+"""Unit tests for reproducible experiment manifests."""
 
 from __future__ import annotations
 

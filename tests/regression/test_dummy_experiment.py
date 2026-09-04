@@ -1,6 +1,6 @@
 """Regression / integration test: dummy experiment produces complete artifact tree.
 
-This test satisfies the P0 exit gate requirement:
+This test satisfies the foundation exit gate requirement:
     "A dummy experiment creates sufficient artifacts."
 """
 
@@ -35,7 +35,7 @@ class DummyStrategy(BaseStrategy):
 
 
 class DummyEvaluator(BaseEvaluator):
-    """Always returns execution_correct=False (no executor in P0)."""
+    """Always returns execution_correct=False (no executor in this harness)."""
 
     def evaluate(
         self,
@@ -45,7 +45,7 @@ class DummyEvaluator(BaseEvaluator):
         gold_tables: tuple[str, ...],
         gold_columns: tuple[str, ...],
     ) -> dict[str, Any]:
-        return {"execution_correct": False, "note": "P0 stub — no executor yet"}
+        return {"execution_correct": False, "note": "foundation runner has no executor yet"}
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +83,7 @@ class TestDummyExperiment:
         cases_and_golds: tuple,
     ) -> None:
         cases, golds = cases_and_golds
-        run_id = "dummy-exp-p0-001"
+        run_id = "foundation_dummy_run"
 
         manifest = build_manifest(
             experiment_id=run_id,

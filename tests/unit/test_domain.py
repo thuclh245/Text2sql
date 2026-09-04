@@ -1,4 +1,4 @@
-"""Unit tests for domain contracts (P0-T02)."""
+"""Unit tests for core domain contracts."""
 
 from __future__ import annotations
 

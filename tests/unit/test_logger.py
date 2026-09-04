@@ -1,4 +1,4 @@
-"""Unit tests for RunLogger (P0-T04)."""
+"""Unit tests for run logging artifacts."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ class TestRunLogger:
         logger.write_manifest(manifest)
         logger.log_prediction({"case_id": "c1", "predicted_sql": "SELECT 1"})
         logger.log_execution({"case_id": "c1", "executed": False, "error": "stub"})
-        logger.log_error({"case_id": "c2", "phase": "strategy", "error": "timeout"})
+        logger.log_error({"case_id": "c2", "component": "strategy", "error": "timeout"})
         logger.write_metrics({"total": 1, "executed": 0, "errors": 1})
 
         assert logger.is_complete(), "RunLogger must create all 5 artifact files"

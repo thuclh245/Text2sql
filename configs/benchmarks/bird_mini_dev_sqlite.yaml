@@ -1,0 +1,39 @@
+# BIRD Mini-Dev SQLite benchmark pin record
+#
+# This file pins the exact benchmark revision used in benchmark experiments.
+# DO NOT modify after pinning without creating a new benchmark entry.
+#
+# Pinned: 2026-09-04
+
+benchmark:
+  name: "BIRD-Mini-Dev"
+  description: |
+    BIRD Mini-Dev: high-quality Text-to-SQL benchmark.
+    Original split: 500 pairs / 11 databases (v1).
+    V2 expansion: 780 instances.
+    We use the SQLite split (SELECT-only) as the primary evaluation target.
+
+  repository:
+    url: "https://github.com/bird-bench/mini_dev"
+    git_commit: "b3d4bcbbae9a96934ad812551eb400c7a3b23c12"
+    clone_date: "2026-09-04"
+
+  dataset:
+    source: "https://drive.google.com/file/d/1UJyA6I6pTmmhYpwdn8iT9QKrcJqSQAcX/view"
+    split: "mini_dev_sqlite"
+    dialect: "SQLite"
+    expected_cases: 500
+    data_hash: "pending-download"
+
+  evaluator:
+    file: "evaluation/evaluation_ex.py"
+    metric: "EX (Execution Accuracy)"
+    commit: "b3d4bcbbae9a96934ad812551eb400c7a3b23c12"
+    note: "Official evaluator uses set-equality on result rows (calculate_ex)"
+
+  constraints:
+    - "SELECT-only queries (no DDL/DML in gold)"
+    - "Gold SQL not passed to inference system"
+    - "Evidence field included but must not leak gold SQL"
+
+  chatsql_identifier: "bird_mini_dev_sqlite_select_500_b3d4bcb"

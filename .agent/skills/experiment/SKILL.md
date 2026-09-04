@@ -40,6 +40,10 @@ only interpretable if exactly one variable changed and no gold data leaked.
    context{evidence_mode,metadata_budget}, retrieval{strategy,hyperparameters},
    execution{dialect,read_only,timeout_seconds}, correction{enabled,budget}.
    Use a scientific-role `experiment_id` (doc 12 §8), never `best`/`final`.
+   The ID must describe the benchmark/system/change being tested, not the
+   roadmap position. Good: `bird_mini_dev_sqlite_full_schema_control`,
+   `lite_sql_reproduced_bird_mini_dev`, `fk_closure_retrieval_ablation`.
+   Bad for runtime artifacts: `phase_1`, `p1_run`, `task_35`, `new_test`.
 
 4. **State the result-directory contract** the run must emit (doc 04 §6):
    `config.yaml`, `manifest.json`, `predictions.jsonl`, `metrics.json`,
@@ -65,3 +69,6 @@ only interpretable if exactly one variable changed and no gold data leaked.
 - Do not overwrite an existing `experiment_id`'s runs — new behavior = new ID.
 - Negative results are kept (doc 04 §7): if it fails, record hypothesis, config,
   result, why, and whether to revisit.
+- Roadmap labels such as `E3`, `P1`, or `T35` can be cited in prose, but they
+  must not be the primary name for configs, runs, benchmark identifiers, public
+  parameters, or result directories.

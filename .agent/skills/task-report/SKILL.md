@@ -42,7 +42,13 @@ Code changes for a task are done and you need to report them in the format doc 1
 4. **Run the acceptance tests** from the task brief and record real output
    (command + pass/fail). If a test was skipped, say so explicitly.
 
-5. **Write the report** in exactly this shape (doc 15 §3):
+5. **Check naming hygiene.** New or changed files, configs, run IDs, benchmark
+   IDs, test fixtures, and public parameters should use scientific-role names.
+   Do not approve names based mainly on roadmap labels such as `phase`, `P0`,
+   `P1`, `task`, `final`, or `new2`, except when quoting source docs/backlog
+   labels in prose.
+
+6. **Write the report** in exactly this shape (doc 15 §3):
    ```
    1. What changed
    2. Why it changed
@@ -54,10 +60,10 @@ Code changes for a task are done and you need to report them in the format doc 1
    ```
    Explain each technical term in a short parenthetical on first use.
 
-6. **Check the relevant DoD gate** in `docs/18_DEFINITION_OF_DONE.md` (v0.1–v1.0)
+7. **Check the relevant DoD gate** in `docs/18_DEFINITION_OF_DONE.md` (v0.1–v1.0)
    and state which gate criteria this task advances or completes.
 
-7. If a PR is expected, offer to write it — body ends with the required
+8. If a PR is expected, offer to write it — body ends with the required
    attribution line.
 
 ## Guardrails
