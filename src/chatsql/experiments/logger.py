@@ -5,6 +5,7 @@ Output layout:
     ├── manifest.json
     ├── predictions.jsonl
     ├── context_views.jsonl
+    ├── groundings.jsonl
     ├── raw_model_outputs.jsonl
     ├── executions.jsonl
     ├── metrics.json
@@ -29,12 +30,14 @@ class RunLogger:
 
         self._predictions_path = self.run_dir / "predictions.jsonl"
         self._context_views_path = self.run_dir / "context_views.jsonl"
+        self._groundings_path = self.run_dir / "groundings.jsonl"
         self._raw_outputs_path = self.run_dir / "raw_model_outputs.jsonl"
         self._executions_path = self.run_dir / "executions.jsonl"
         self._errors_path = self.run_dir / "errors.jsonl"
         for path in (
             self._predictions_path,
             self._context_views_path,
+            self._groundings_path,
             self._raw_outputs_path,
             self._executions_path,
             self._errors_path,
@@ -61,6 +64,10 @@ class RunLogger:
     def log_context_view(self, record: dict[str, Any]) -> None:
         """Append one rendered LLM context to context_views.jsonl."""
         self._append_jsonl(self._context_views_path, record)
+
+    def log_grounding(self, record: dict[str, Any]) -> None:
+        """Append one schema grounding result to groundings.jsonl."""
+        self._append_jsonl(self._groundings_path, record)
 
     def log_raw_output(self, record: dict[str, Any]) -> None:
         """Append one raw model response to raw_model_outputs.jsonl (for auditing)."""
@@ -93,6 +100,7 @@ class RunLogger:
             "manifest.json",
             "predictions.jsonl",
             "context_views.jsonl",
+            "groundings.jsonl",
             "raw_model_outputs.jsonl",
             "executions.jsonl",
             "metrics.json",

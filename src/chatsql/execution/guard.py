@@ -46,7 +46,9 @@ def inspect_read_only(sql: str) -> GuardVerdict:
 
     parsed = [stmt for stmt in statements if stmt is not None]
     if not parsed:
-        return GuardVerdict(ok=False, reason="SQL parse error: empty statement", is_parse_error=True)
+        return GuardVerdict(
+            ok=False, reason="SQL parse error: empty statement", is_parse_error=True
+        )
     if len(parsed) > 1:
         return GuardVerdict(ok=False, reason=REJECTED_MULTIPLE)
 

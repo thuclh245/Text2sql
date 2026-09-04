@@ -24,6 +24,9 @@ benchmark:
 strategy:
   name: "full_schema"
 
+grounder:
+  name: "full-schema"
+
 model:
   provider: "openai"
   name: "gpt-4o-mini"

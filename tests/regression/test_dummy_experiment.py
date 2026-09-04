@@ -16,10 +16,11 @@ from chatsql.domain.catalog import ColumnInfo, DatabaseCatalog, TableInfo
 from chatsql.domain.gold_case import GoldCase
 from chatsql.domain.inference_case import InferenceCase
 from chatsql.domain.result import Prediction
+from chatsql.execution import ReadOnlySQLiteExecutor
 from chatsql.experiments.logger import RunLogger
 from chatsql.experiments.manifest import build_manifest
-from chatsql.execution import ReadOnlySQLiteExecutor
 from chatsql.experiments.runner import BaseEvaluator, BaseStrategy, ExperimentRunner
+from chatsql.grounding import ColumnRef, GroundingResult, SchemaGrounder, TableRef
 
 # ---------------------------------------------------------------------------
 # Minimal concrete implementations for testing
@@ -47,6 +48,16 @@ class DummyEvaluator(BaseEvaluator):
         gold_columns: tuple[str, ...],
     ) -> dict[str, Any]:
         return {"execution_correct": execution.executed}
+
+
+class OrdersOnlyGrounder(SchemaGrounder):
+    """Selects only the orders table so the runner projection can be asserted."""
+
+    def ground(self, case: InferenceCase, catalog: DatabaseCatalog) -> GroundingResult:
+        return GroundingResult(
+            tables=(TableRef(name="orders"),),
+            columns=(ColumnRef(table_name="orders", column_name="id"),),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -239,3 +250,57 @@ class TestDummyExperiment:
         metrics = json.loads((tmp_path / "failure-record-test" / "metrics.json").read_text())
         assert metrics["total"] == 1
         assert metrics["errors"] == 1
+
+    def test_runner_uses_grounded_catalog(
+        self,
+        tmp_path: Path,
+        simple_catalog: DatabaseCatalog,
+    ) -> None:
+        class CapturingStrategy(BaseStrategy):
+            def __init__(self) -> None:
+                self.seen_catalog: DatabaseCatalog | None = None
+
+            def run(self, case: InferenceCase, catalog: DatabaseCatalog) -> Prediction:
+                self.seen_catalog = catalog
+                return Prediction(case_id=case.case_id, predicted_sql="SELECT 1")
+
+        manifest = build_manifest(
+            experiment_id="grounded-catalog-test",
+            seed=0,
+            benchmark_name="BIRD",
+            benchmark_revision="test",
+            benchmark_data_hash="h",
+            evaluator_revision="e",
+            strategy_name="Grounded",
+            model_provider="stub",
+            model_name="stub",
+            model_revision="v0",
+            model_temperature=0.0,
+        )
+        strategy = CapturingStrategy()
+        runner = ExperimentRunner(
+            strategy=strategy,
+            evaluator=DummyEvaluator(),
+            logger=RunLogger(runs_root=tmp_path, run_id="grounded-catalog-test"),
+            executor=ReadOnlySQLiteExecutor(tmp_path),
+            grounder=OrdersOnlyGrounder(),
+        )
+
+        records = runner.run(
+            manifest=manifest,
+            cases=[InferenceCase(case_id="q0", question="Q?", database_id="shop")],
+            golds=[
+                GoldCase(
+                    case_id="q0",
+                    gold_sql="SELECT id FROM orders",
+                    gold_tables=("orders",),
+                    gold_columns=("id",),
+                )
+            ],
+            catalogs={"shop": simple_catalog},
+        )
+
+        assert strategy.seen_catalog is not None
+        assert strategy.seen_catalog.table_names() == ["orders"]
+        assert strategy.seen_catalog.tables[0].column_names() == ["id"]
+        assert records[0].metadata["retrieval"]["table_recall"] == 1.0

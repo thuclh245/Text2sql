@@ -20,9 +20,28 @@ from chatsql.experiments.manifest import build_manifest
 from chatsql.experiments.registry import get_strategy, list_strategies
 from chatsql.experiments.runner import ExperimentRunner
 from chatsql.generation.llm_client import build_llm_client
+from chatsql.grounding import get_grounder, list_grounders
 from chatsql.provenance import sha256_file, short_hash
 
 BIRD_MINI_DEV_SQLITE = "bird_mini_dev_sqlite_select_500"
+
+_BENCHMARK_ALIASES = {
+    BIRD_MINI_DEV_SQLITE: BIRD_MINI_DEV_SQLITE,
+    "bird-mini-dev-sqlite-500": BIRD_MINI_DEV_SQLITE,
+}
+_STRATEGY_ALIASES = {
+    "full_schema": "full_schema",
+    "full-schema": "full_schema",
+    "full_schema_control": "full_schema",
+}
+_GROUNDER_ALIASES = {
+    "full_schema": "full-schema",
+    "full-schema": "full-schema",
+    "simple_dense": "simple-dense",
+    "simple-dense": "simple-dense",
+    "lite_sql": "lite-sql",
+    "lite-sql": "lite-sql",
+}
 
 app = typer.Typer(help="CHATSQL research harness.")
 benchmark_app = typer.Typer(help="Benchmark management commands.")
@@ -100,7 +119,9 @@ def experiment_run(
     cfg, cfg_hash = load_and_hash(config)
     typer.echo(f"Config loaded: {config} (hash: {short_hash(cfg_hash)})")
 
-    _require_benchmark(benchmark)
+    benchmark = _normalize_benchmark(benchmark)
+    strategy = _normalize_strategy(strategy)
+    _cross_check_config_benchmark(cfg, benchmark)
     strategy_cls = _resolve_strategy(strategy)
     _cross_check_config_strategy(cfg, strategy)
 
@@ -108,6 +129,7 @@ def experiment_run(
     model_cfg = cfg.get("model", {})
     execution_cfg = cfg.get("execution", {})
     experiment_cfg = cfg.get("experiment", {})
+    grounder_cfg = cfg.get("grounder", {"name": "full-schema"})
 
     revision = _require_config_value(benchmark_cfg, "benchmark.revision")
     evaluator_revision = _require_config_value(benchmark_cfg, "benchmark.evaluator_revision")
@@ -140,6 +162,8 @@ def experiment_run(
         timeout_seconds=execution_cfg.get("timeout_seconds", 30.0),
         row_limit=execution_cfg.get("row_limit", execution_cfg.get("max_rows", 10_000)),
     )
+    grounder_name = _normalize_grounder(_require_config_value(grounder_cfg, "grounder.name"))
+    grounder = _build_grounder(grounder_name, grounder_cfg)
     strategy_impl = strategy_cls(build_llm_client(model_cfg))
     evaluator = BirdEXEvaluator(
         executor=executor,
@@ -157,7 +181,8 @@ def experiment_run(
         benchmark_data_hash=data_hash,
         evaluator_revision=evaluator_revision,
         strategy_name=strategy,
-        strategy_config=cfg,
+        grounder_name=grounder_name,
+        strategy_config={**cfg, "grounder": {**grounder_cfg, "name": grounder_name}},
         model_provider=model_cfg.get("provider", "openai"),
         model_name=model_cfg.get("name", "gpt-4o-mini"),
         model_revision=model_cfg.get("revision", "unknown"),
@@ -170,7 +195,7 @@ def experiment_run(
     if dry_run:
         typer.echo(
             f"Dry-run OK: {len(cases)} cases, {len(db_ids)} databases, "
-            f"strategy={strategy}, data_hash={short_hash(data_hash)}"
+            f"strategy={strategy}, grounder={grounder_name}, data_hash={short_hash(data_hash)}"
         )
         raise typer.Exit()
 
@@ -179,6 +204,7 @@ def experiment_run(
         evaluator=evaluator,
         logger=logger,
         executor=executor,
+        grounder=grounder,
     )
     records = runner.run(
         manifest=manifest,
@@ -200,8 +226,23 @@ def experiment_run(
 
 
 def _require_benchmark(benchmark: str) -> None:
-    if benchmark != BIRD_MINI_DEV_SQLITE:
-        raise typer.BadParameter(f"supported benchmark identifiers: {BIRD_MINI_DEV_SQLITE}")
+    _normalize_benchmark(benchmark)
+
+
+def _normalize_benchmark(benchmark: str) -> str:
+    try:
+        return _BENCHMARK_ALIASES[benchmark]
+    except KeyError as exc:
+        supported = ", ".join(sorted(_BENCHMARK_ALIASES))
+        raise typer.BadParameter(f"supported benchmark identifiers: {supported}") from exc
+
+
+def _normalize_strategy(strategy: str) -> str:
+    return _STRATEGY_ALIASES.get(strategy, strategy)
+
+
+def _normalize_grounder(grounder: str) -> str:
+    return _GROUNDER_ALIASES.get(grounder, grounder)
 
 
 def _resolve_strategy(strategy: str) -> Any:
@@ -213,11 +254,39 @@ def _resolve_strategy(strategy: str) -> Any:
         ) from exc
 
 
+def _build_grounder(grounder: str, config: dict[str, Any]) -> Any:
+    grounder_cls = _resolve_grounder(grounder)
+    params = {key: value for key, value in config.items() if key != "name"}
+    try:
+        return grounder_cls(**params)
+    except TypeError as exc:
+        raise typer.BadParameter(
+            f"invalid config for grounder {grounder!r}: {exc}"
+        ) from exc
+
+
+def _resolve_grounder(grounder: str) -> Any:
+    try:
+        return get_grounder(grounder)
+    except KeyError as exc:
+        raise typer.BadParameter(
+            f"unknown grounder {grounder!r}; registered: {', '.join(list_grounders())}"
+        ) from exc
+
+
 def _cross_check_config_strategy(cfg: dict[str, Any], strategy: str) -> None:
     configured = cfg.get("strategy", {}).get("name")
-    if configured is not None and configured != strategy:
+    if configured is not None and _normalize_strategy(configured) != strategy:
         raise typer.BadParameter(
             f"--strategy {strategy!r} does not match config strategy.name {configured!r}"
+        )
+
+
+def _cross_check_config_benchmark(cfg: dict[str, Any], benchmark: str) -> None:
+    configured = cfg.get("benchmark", {}).get("name")
+    if configured is not None and _normalize_benchmark(configured) != benchmark:
+        raise typer.BadParameter(
+            f"--benchmark {benchmark!r} does not match config benchmark.name {configured!r}"
         )
 
 

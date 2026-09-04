@@ -6,7 +6,15 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from chatsql.cli import app
+from chatsql.cli import (
+    BIRD_MINI_DEV_SQLITE,
+    _cross_check_config_benchmark,
+    _cross_check_config_strategy,
+    _normalize_benchmark,
+    _normalize_grounder,
+    _normalize_strategy,
+    app,
+)
 
 
 def test_cli_version() -> None:
@@ -24,6 +32,29 @@ def test_cli_rejects_unknown_benchmark() -> None:
 
     assert result.exit_code != 0
     assert "supported benchmark identifiers" in result.output
+
+
+def test_cli_accepts_documented_benchmark_alias() -> None:
+    assert _normalize_benchmark("bird-mini-dev-sqlite-500") == BIRD_MINI_DEV_SQLITE
+
+
+def test_cli_accepts_documented_strategy_aliases() -> None:
+    assert _normalize_strategy("full-schema") == "full_schema"
+    assert _normalize_strategy("full_schema_control") == "full_schema"
+
+
+def test_cli_accepts_documented_grounder_aliases() -> None:
+    assert _normalize_grounder("full_schema") == "full-schema"
+    assert _normalize_grounder("simple_dense") == "simple-dense"
+    assert _normalize_grounder("lite_sql") == "lite-sql"
+
+
+def test_cli_cross_checks_config_aliases() -> None:
+    _cross_check_config_benchmark(
+        {"benchmark": {"name": "bird-mini-dev-sqlite-500"}},
+        BIRD_MINI_DEV_SQLITE,
+    )
+    _cross_check_config_strategy({"strategy": {"name": "full-schema"}}, "full_schema")
 
 
 def test_cli_validates_bird_fixture(tmp_path: Path) -> None:

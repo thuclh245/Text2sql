@@ -44,6 +44,7 @@ class SystemMeta(BaseModel):
     strategy: str
     config_hash: str
     upstream_commit: str
+    grounder: str = "unknown"
 
 
 class ModelMeta(BaseModel):
@@ -145,6 +146,7 @@ def build_manifest(
     benchmark_data_hash: str,
     evaluator_revision: str,
     strategy_name: str,
+    grounder_name: str = "unknown",
     strategy_config: dict[str, Any] | None = None,
     upstream_commit: str = "unknown",
     model_provider: str,
@@ -189,6 +191,7 @@ def build_manifest(
         ),
         system=SystemMeta(
             strategy=strategy_name,
+            grounder=grounder_name,
             config_hash=_hash_config(strategy_config),
             upstream_commit=upstream_commit,
         ),

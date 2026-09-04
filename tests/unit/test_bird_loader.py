@@ -72,6 +72,28 @@ class TestBirdLoader:
         cases, golds = loader.load(question_json, select_only=False)
         assert len(cases) == 3
 
+    def test_select_only_rejects_multiple_statements(self, tmp_path: Path) -> None:
+        path = tmp_path / "mini_dev_sqlite.json"
+        path.write_text(
+            json.dumps(
+                [
+                    {
+                        "question_id": 1,
+                        "db_id": "shop",
+                        "question": "How many products are there?",
+                        "evidence": "",
+                        "SQL": "SELECT COUNT(*) FROM products; DROP TABLE products",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        cases, golds = BirdLoader().load(path, select_only=True)
+
+        assert cases == []
+        assert golds == {}
+
     def test_case_ids_are_stable(self, question_json: Path) -> None:
         loader = BirdLoader()
         cases, _ = loader.load(question_json)

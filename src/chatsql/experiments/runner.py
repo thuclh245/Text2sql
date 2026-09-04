@@ -12,15 +12,17 @@ from __future__ import annotations
 import abc
 from typing import Any
 
-from chatsql.domain.catalog import DatabaseCatalog
+from chatsql.domain.catalog import DatabaseCatalog, TableInfo
 from chatsql.domain.gold_case import GoldCase
 from chatsql.domain.inference_case import InferenceCase
 from chatsql.domain.result import ExecutionResult, ExperimentRecord, Prediction
 from chatsql.evaluation.base import BaseEvaluator
+from chatsql.evaluation.retrieval import RetrievalEvaluator, RetrievalMetrics
 from chatsql.execution.base import BaseExecutor
 from chatsql.experiments.logger import RunLogger
 from chatsql.experiments.manifest import ExperimentManifest
 from chatsql.generation.pricing import estimate_cost_usd
+from chatsql.grounding import FullSchemaGrounder, GroundingResult, SchemaGrounder
 
 __all__ = ["BaseEvaluator", "BaseStrategy", "ExperimentRunner"]
 
@@ -112,6 +114,49 @@ class _RunAggregator:
         }
 
 
+class _RetrievalAggregator:
+    """Accumulates retrieval metrics across grounded cases."""
+
+    def __init__(self) -> None:
+        self.total = 0
+        self.table_recall = 0.0
+        self.column_recall = 0.0
+        self.complete_schema_recall = 0.0
+        self.precision = 0.0
+        self.false_positive_rate = 0.0
+        self.retrieved_tables = 0
+        self.retrieved_columns = 0
+        self.context_tokens = 0
+
+    def observe(self, metrics: RetrievalMetrics) -> None:
+        self.total += 1
+        self.table_recall += metrics.table_recall
+        self.column_recall += metrics.column_recall
+        self.complete_schema_recall += metrics.complete_schema_recall
+        self.precision += metrics.precision
+        self.false_positive_rate += metrics.false_positive_rate
+        self.retrieved_tables += metrics.retrieved_tables_count
+        self.retrieved_columns += metrics.retrieved_columns_count
+        self.context_tokens += metrics.estimated_context_tokens
+
+    def as_dict(self) -> dict[str, Any]:
+        scored = self.total or 1
+        return {
+            "retrieval_total": self.total,
+            "mean_table_recall": round(self.table_recall / scored, 4),
+            "mean_column_recall": round(self.column_recall / scored, 4),
+            "mean_complete_schema_recall": round(
+                self.complete_schema_recall / scored, 4
+            ),
+            "mean_precision": round(self.precision / scored, 4),
+            "mean_false_positive_rate": round(self.false_positive_rate / scored, 4),
+            "mean_retrieved_tables": round(self.retrieved_tables / scored, 3),
+            "mean_retrieved_columns": round(self.retrieved_columns / scored, 3),
+            "sum_retrieval_context_tokens": self.context_tokens,
+            "mean_retrieval_context_tokens": round(self.context_tokens / scored, 3),
+        }
+
+
 class ExperimentRunner:
     """Orchestrates a full benchmark run: strategy -> executor -> evaluator -> log."""
 
@@ -121,11 +166,15 @@ class ExperimentRunner:
         evaluator: BaseEvaluator,
         logger: RunLogger,
         executor: BaseExecutor,
+        grounder: SchemaGrounder | None = None,
+        retrieval_evaluator: RetrievalEvaluator | None = None,
     ) -> None:
         self.strategy = strategy
         self.evaluator = evaluator
         self.logger = logger
         self.executor = executor
+        self.grounder = grounder or FullSchemaGrounder()
+        self.retrieval_evaluator = retrieval_evaluator or RetrievalEvaluator()
 
     def run(
         self,
@@ -140,6 +189,7 @@ class ExperimentRunner:
 
         records: list[ExperimentRecord] = []
         aggregate = _RunAggregator(model_name=manifest.model.name)
+        retrieval_aggregate = _RetrievalAggregator()
 
         for case, gold in zip(cases, golds, strict=True):
             if case.case_id != gold.case_id:
@@ -150,10 +200,42 @@ class ExperimentRunner:
 
             aggregate.total += 1
 
+            catalog = catalogs[case.database_id]
+            try:
+                grounding = self.grounder.ground(case, catalog)
+                grounded_catalog = _project_catalog(catalog, grounding)
+            except Exception as exc:  # noqa: BLE001 - recorded per case, run continues
+                self.logger.log_error(
+                    {"case_id": case.case_id, "component": "grounder", "error": str(exc)}
+                )
+                records.append(
+                    ExperimentRecord(
+                        case_id=case.case_id,
+                        database_id=case.database_id,
+                        question=case.question,
+                        predicted_sql="",
+                        executed=False,
+                        execution_correct=False,
+                        error=str(exc),
+                    )
+                )
+                aggregate.strategy_errors += 1
+                continue
+
+            retrieval_metrics = self.retrieval_evaluator.evaluate_case(grounding, gold)
+            retrieval_aggregate.observe(retrieval_metrics)
+            self.logger.log_grounding(
+                {
+                    "case_id": case.case_id,
+                    "database_id": case.database_id,
+                    "grounding": _grounding_to_dict(grounding),
+                    "retrieval_metrics": retrieval_metrics.__dict__,
+                }
+            )
+
             # --- Strategy step (zero gold access) ---
             try:
-                catalog = catalogs[case.database_id]
-                prediction = self.strategy.run(case, catalog)
+                prediction = self.strategy.run(case, grounded_catalog)
             except Exception as exc:  # noqa: BLE001 - recorded per case, run continues
                 self.logger.log_error(
                     {"case_id": case.case_id, "component": "strategy", "error": str(exc)}
@@ -216,6 +298,7 @@ class ExperimentRunner:
                     }
                 )
 
+            metrics["retrieval"] = retrieval_metrics.__dict__
             aggregate.observe(prediction, execution, metrics)
             records.append(
                 ExperimentRecord(
@@ -231,5 +314,45 @@ class ExperimentRunner:
                 )
             )
 
-        self.logger.write_metrics(aggregate.as_dict())
+        run_metrics = aggregate.as_dict()
+        run_metrics.update(retrieval_aggregate.as_dict())
+        self.logger.write_metrics(run_metrics)
         return records
+
+
+def _project_catalog(catalog: DatabaseCatalog, grounding: GroundingResult) -> DatabaseCatalog:
+    """Return a catalog containing only the schema selected by ``grounding``."""
+    selected_tables = {table.name for table in grounding.tables}
+    selected_tables.update(column.table_name for column in grounding.columns)
+
+    selected_columns_by_table: dict[str, set[str]] = {
+        table_name: set() for table_name in selected_tables
+    }
+    for column in grounding.columns:
+        selected_columns_by_table.setdefault(column.table_name, set()).add(column.column_name)
+
+    projected_tables: list[TableInfo] = []
+    for table in catalog.tables:
+        if table.name not in selected_tables:
+            continue
+        selected_columns = selected_columns_by_table.get(table.name)
+        columns = tuple(column for column in table.columns if column.name in selected_columns)
+        projected_tables.append(
+            TableInfo(
+                name=table.name,
+                columns=columns,
+                description=table.description,
+            )
+        )
+
+    return DatabaseCatalog(database_id=catalog.database_id, tables=tuple(projected_tables))
+
+
+def _grounding_to_dict(grounding: GroundingResult) -> dict[str, Any]:
+    return {
+        "tables": [table.__dict__ for table in grounding.tables],
+        "columns": [column.__dict__ for column in grounding.columns],
+        "evidence": list(grounding.evidence),
+        "scores": grounding.scores,
+        "metadata": grounding.metadata,
+    }
