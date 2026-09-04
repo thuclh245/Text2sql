@@ -11,6 +11,7 @@ import typer
 
 import chatsql.grounding.full_schema  # noqa: F401 - imported for @register side effects
 import chatsql.grounding.lite_sql_adapter  # noqa: F401 - imported for @register side effects
+import chatsql.grounding.relationship_aware  # noqa: F401 - imported for @register side effects
 import chatsql.grounding.simple_dense  # noqa: F401 - imported for @register side effects
 import chatsql.strategies  # noqa: F401 - imported for @register side effects
 from chatsql import __version__
@@ -47,6 +48,8 @@ _GROUNDER_ALIASES = {
     "simple-dense": "simple-dense",
     "lite_sql": "lite-sql",
     "lite-sql": "lite-sql",
+    "relationship_aware": "relationship-aware",
+    "relationship-aware": "relationship-aware",
 }
 
 app = typer.Typer(help="CHATSQL research harness.")
@@ -351,9 +354,7 @@ def _build_grounder(grounder: str, config: dict[str, Any]) -> Any:
     try:
         return grounder_cls(**params)
     except TypeError as exc:
-        raise typer.BadParameter(
-            f"invalid config for grounder {grounder!r}: {exc}"
-        ) from exc
+        raise typer.BadParameter(f"invalid config for grounder {grounder!r}: {exc}") from exc
 
 
 def _resolve_grounder(grounder: str) -> Any:
@@ -389,5 +390,163 @@ def _require_config_value(section: dict[str, Any], dotted_key: str) -> Any:
     return value
 
 
+analysis_app = typer.Typer(help="Error analysis and diagnostic commands (Phase 5).")
+
+
+@analysis_app.command("run")
+def analysis_run(
+    run_dir: Annotated[Path, typer.Option("--run-dir", help="Path to experiment run directory.")],
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", help="Output directory for error analysis artifacts."),
+    ] = None,
+) -> None:
+    """Analyze a run directory and generate Phase 5 error analysis artifacts."""
+    from chatsql.analysis.reports import analyze_run_directory
+
+    if not run_dir.exists():
+        typer.echo(f"Run directory not found: {run_dir}")
+        raise typer.Exit(code=1)
+
+    summary = analyze_run_directory(run_dir=run_dir, output_dir=output_dir)
+    target_out = output_dir if output_dir is not None else run_dir / "error_analysis"
+
+    typer.echo(f"Error Analysis complete for: {run_dir.name}")
+    typer.echo(f"Accuracy: {summary['accuracy_pct']}% EX")
+    typer.echo("Error Budget:")
+    for cat, pct in summary["error_budget_pct"].items():
+        typer.echo(f"  - {cat}: {pct}%")
+    dec = summary["decision"]
+    phase_name = dec.get("recommended_phase_name", "")
+    typer.echo(f"\nRecommended Next Phase: {dec['recommended_phase']} ({phase_name})")
+    typer.echo(f"Reason: {dec['reason']}")
+    typer.echo(f"Artifacts saved to: {target_out}")
+
+
+@analysis_app.command("view")
+def analysis_view(
+    run_dir: Annotated[Path, typer.Option("--run-dir", help="Path to experiment run directory.")],
+    case_id: Annotated[
+        str | None,
+        typer.Option("--case-id", help="Filter by specific case ID."),
+    ] = None,
+    error_code: Annotated[
+        str | None,
+        typer.Option("--error-code", help="Filter by error code (e.g. E01, E10)."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum cases to display.")] = 5,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", help="Save review sheet to Markdown file."),
+    ] = None,
+) -> None:
+    """View and inspect cases for manual review audit (P5-T02)."""
+    import json
+
+    from chatsql.analysis.case_view import export_cases_for_review, render_case_for_review
+    from chatsql.analysis.reports import analyze_run_directory
+    from chatsql.analysis.taxonomy import LabeledCase
+
+    if not run_dir.exists():
+        typer.echo(f"Run directory not found: {run_dir}")
+        raise typer.Exit(code=1)
+
+    labels_file = run_dir / "error_analysis" / "labeled_cases.jsonl"
+    if not labels_file.exists():
+        analyze_run_directory(run_dir)
+
+    cases: list[LabeledCase] = []
+    with labels_file.open("r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                item = json.loads(line)
+                c = LabeledCase.model_validate(item)
+                if case_id and c.case_id != case_id:
+                    continue
+                if error_code and c.primary_error != error_code:
+                    continue
+                cases.append(c)
+
+    if not cases:
+        typer.echo("No matching cases found.")
+        return
+
+    if output is not None:
+        export_cases_for_review(cases, output_path=output, limit=limit)
+        typer.echo(f"Exported {min(len(cases), limit)} cases to {output}")
+        return
+
+    for c in cases[:limit]:
+        typer.echo(render_case_for_review(c))
+
+
+@analysis_app.command("compare")
+def analysis_compare(
+    run_a: Annotated[Path, typer.Option("--run-a", help="Path to baseline run directory A.")],
+    run_b: Annotated[Path, typer.Option("--run-b", help="Path to candidate run directory B.")],
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", help="Save comparison report to Markdown file."),
+    ] = None,
+) -> None:
+    """Compare error distributions and shifts between two experiment runs."""
+    from chatsql.analysis.compare import compare_run_directories, format_error_comparison_md
+
+    if not run_a.exists():
+        typer.echo(f"Run directory A not found: {run_a}")
+        raise typer.Exit(code=1)
+    if not run_b.exists():
+        typer.echo(f"Run directory B not found: {run_b}")
+        raise typer.Exit(code=1)
+
+    comp = compare_run_directories(run_a, run_b)
+    md = format_error_comparison_md(comp)
+
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(md, encoding="utf-8")
+        typer.echo(f"Comparison report saved to: {output}")
+    else:
+        typer.echo(md)
+
+
+@analysis_app.command("memo")
+def analysis_memo(
+    run_dir: Annotated[Path, typer.Option("--run-dir", help="Path to experiment run directory.")],
+    baseline: Annotated[
+        str,
+        typer.Option("--baseline", help="Baseline name for the memo."),
+    ] = "B0 Full-Schema Control",
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", help="Save memo to Markdown file."),
+    ] = None,
+) -> None:
+    """Generate the Phase 5 Exit Gate scientific research memo."""
+    import json
+
+    from chatsql.analysis.reports import analyze_run_directory, generate_decision_memo
+
+    if not run_dir.exists():
+        typer.echo(f"Run directory not found: {run_dir}")
+        raise typer.Exit(code=1)
+
+    summary_file = run_dir / "error_analysis" / "summary.json"
+    if summary_file.exists():
+        with summary_file.open("r", encoding="utf-8") as f:
+            summary = json.load(f)
+    else:
+        summary = analyze_run_directory(run_dir)
+
+    memo = generate_decision_memo(summary, baseline_name=baseline)
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(memo, encoding="utf-8")
+        typer.echo(f"Exit Gate decision memo saved to: {output}")
+    else:
+        typer.echo(memo)
+
+
 app.add_typer(benchmark_app, name="benchmark")
 app.add_typer(experiment_app, name="experiment")
+app.add_typer(analysis_app, name="analysis")

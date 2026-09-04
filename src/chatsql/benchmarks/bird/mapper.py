@@ -104,9 +104,7 @@ class BirdSchemaMapper:
         return fk_map
 
 
-def load_catalogs(
-    db_root: Path, db_ids: list[str]
-) -> tuple[dict[str, DatabaseCatalog], list[str]]:
+def load_catalogs(db_root: Path, db_ids: list[str]) -> tuple[dict[str, DatabaseCatalog], list[str]]:
     """Load catalogs for ``db_ids`` from ``db_root/<db_id>/<db_id>.sqlite``.
 
     Returns ``(catalogs, failures)`` - one ``"<db_id>: <reason>"`` string per

@@ -1,0 +1,490 @@
+"""Error Budget calculations, Summary Reports, and Research Decision Gate (P5-T04)."""
+
+from __future__ import annotations
+
+import json
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+from chatsql.analysis.taxonomy import TAXONOMY_MAP, ErrorCategory, LabeledCase
+
+
+def recommend_next_research_phase(error_budget_pct: dict[str, float]) -> dict[str, Any]:
+    """Apply P5 Scientific Decision Rules (Section 6) to determine next phase.
+
+    Decision rules:
+    - If Retrieval / Grounding dominates (or highest error category) -> P6A (Grounding Research)
+    - If Relationship / Join dominates -> P6B (Join / Relationship Research)
+    - If Business / Semantic dominates -> P7 (Oracle Semantic Experiment)
+    - If SQL Generation dominates -> Prompt / LLM Reasoning strategy refinement
+    """
+    # Exclude NONE (Correct) when finding bottleneck
+    error_cats = {k: v for k, v in error_budget_pct.items() if k != ErrorCategory.NONE.value}
+    if not error_cats or sum(error_cats.values()) == 0:
+        return {
+            "recommended_phase": "P6A",
+            "reason": "Zero errors detected; default to baseline research phase P6A.",
+        }
+
+    dominant_cat = max(error_cats, key=error_cats.get)  # type: ignore[arg-type]
+    dominant_pct = error_cats[dominant_cat]
+
+    if dominant_cat == ErrorCategory.RETRIEVAL_GROUNDING.value:
+        recommended = "P6A"
+        phase_name = "P6A — Grounding & Retrieval Research"
+        reason = (
+            f"Retrieval/Grounding dominates the error budget ({dominant_pct:.1f}% of errors). "
+            "Focus must be on schema grounding, dense table/column retrieval, and noise reduction."
+        )
+    elif dominant_cat == ErrorCategory.RELATIONSHIP_JOIN.value:
+        recommended = "P6B"
+        phase_name = "P6B — Join & Relationship Research"
+        reason = (
+            f"Relationship/Join errors dominate the error budget ({dominant_pct:.1f}% of errors). "
+            "Focus must be on join path resolution, relationship graphs, and "
+            "grain/cardinality analysis."
+        )
+    elif dominant_cat == ErrorCategory.BUSINESS_SEMANTIC.value:
+        recommended = "P7"
+        phase_name = "P7 — Oracle Semantic Experiment"
+        reason = (
+            f"Business/Semantic errors dominate the error budget ({dominant_pct:.1f}% of errors). "
+            "Prioritize semantic grounding and test Oracle Semantic Model IR."
+        )
+    else:
+        recommended = "P6A"
+        phase_name = f"P6A / Refinement (Dominant category: {dominant_cat})"
+        reason = (
+            f"Errors are dominated by {dominant_cat} ({dominant_pct:.1f}%). "
+            "LLM generation/prompting or value grounding requires refinement."
+        )
+
+    return {
+        "recommended_phase": recommended,
+        "recommended_phase_name": phase_name,
+        "dominant_category": dominant_cat,
+        "dominant_percentage": round(dominant_pct, 2),
+        "reason": reason,
+    }
+
+
+def generate_error_summary_json(
+    labeled_cases: list[LabeledCase],
+    slice_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Generate structured summary JSON dictionary including Error Budget and Research Decision."""
+    total_cases = len(labeled_cases)
+    correct_count = sum(1 for c in labeled_cases if c.execution_correct)
+    incorrect_count = total_cases - correct_count
+    accuracy_pct = (correct_count / total_cases * 100.0) if total_cases > 0 else 0.0
+
+    # Error code breakdown
+    code_counts: Counter[str] = Counter()
+    category_counts: Counter[str] = Counter()
+
+    for case in labeled_cases:
+        code_counts[case.primary_error] += 1
+        category_counts[case.primary_category.value] += 1
+
+    # Calculate Error Budget percentage (relative to total incorrect cases)
+    error_budget_pct: dict[str, float] = {}
+    for cat, count in category_counts.items():
+        if cat == ErrorCategory.NONE.value:
+            continue
+        pct = (count / incorrect_count * 100.0) if incorrect_count > 0 else 0.0
+        error_budget_pct[cat] = round(pct, 2)
+
+    decision = recommend_next_research_phase(error_budget_pct)
+
+    code_breakdown: list[dict[str, Any]] = []
+    for code, count in code_counts.most_common():
+        info = TAXONOMY_MAP.get(code)
+        code_breakdown.append(
+            {
+                "code": code,
+                "name": info.name if info else code,
+                "category": info.category.value if info else "Unknown",
+                "count": count,
+                "pct_of_errors": round((count / incorrect_count * 100.0), 2)
+                if incorrect_count > 0
+                else 0.0,
+            }
+        )
+
+    return {
+        "total_cases": total_cases,
+        "correct_cases": correct_count,
+        "incorrect_cases": incorrect_count,
+        "accuracy_pct": round(accuracy_pct, 2),
+        "error_budget_pct": error_budget_pct,
+        "category_counts": dict(category_counts),
+        "error_code_breakdown": code_breakdown,
+        "slices": slice_summary or {},
+        "decision": decision,
+    }
+
+
+def generate_error_summary_md(summary: dict[str, Any]) -> str:
+    """Generate human-readable Markdown summary report for P5 gate review."""
+    total = summary["total_cases"]
+    correct = summary["correct_cases"]
+    incorrect = summary["incorrect_cases"]
+    acc = summary["accuracy_pct"]
+    decision = summary["decision"]
+
+    lines: list[str] = []
+    lines.append("# CHATSQL — Phase 5 Error Analysis Report")
+    lines.append("")
+    lines.append("## 1. Overall Performance Overview")
+    lines.append(f"- **Total Benchmark Cases:** {total}")
+    lines.append(f"- **Execution Correct (EX):** {correct} ({acc:.2f}%)")
+    lines.append(f"- **Total Incorrect Cases:** {incorrect}")
+    lines.append("")
+
+    lines.append("## 2. Error Budget Breakdown")
+    lines.append("| Category | Incorrect Cases | Error Budget Share (%) |")
+    lines.append("|---|:---:|:---:|")
+
+    for cat, pct in summary["error_budget_pct"].items():
+        cnt = summary["category_counts"].get(cat, 0)
+        lines.append(f"| {cat} | {cnt} | **{pct:.2f}%** |")
+    lines.append("")
+
+    lines.append("## 3. Specific Error Code Breakdown")
+    lines.append("| Code | Error Name | Category | Count | % of Errors |")
+    lines.append("|---|---|---|:---:|:---:|")
+    for item in summary["error_code_breakdown"]:
+        if item["code"] == "NONE":
+            continue
+        row = (
+            f"| `{item['code']}` | {item['name']} | {item['category']} | "
+            f"{item['count']} | {item['pct_of_errors']:.1f}% |"
+        )
+        lines.append(row)
+    lines.append("")
+
+    if summary.get("slices"):
+        lines.append("## 4. Slice Performance Analysis")
+        for slice_dim, slice_vals in summary["slices"].items():
+            lines.append(f"### Slice Dimension: `{slice_dim}`")
+            lines.append("| Sub-Slice | Total | Correct | Errors | Accuracy (%) |")
+            lines.append("|---|:---:|:---:|:---:|:---:|")
+            for sub_name, metrics in slice_vals.items():
+                row = (
+                    f"| {sub_name} | {metrics['total']} | {metrics['correct']} | "
+                    f"{metrics['errors']} | {metrics['accuracy_pct']:.2f}% |"
+                )
+                lines.append(row)
+            lines.append("")
+
+    lines.append("## 5. Scientific Gate & Research Recommendation")
+    lines.append(f"- **Observed Bottleneck:** {decision.get('dominant_category', 'N/A')}")
+    lines.append(f"- **Recommended Next Phase:** `{decision.get('recommended_phase', 'P6A')}`")
+    lines.append(f"- **Phase Title:** {decision.get('recommended_phase_name', '')}")
+    lines.append(f"- **Scientific Rationale:** {decision['reason']}")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def generate_decision_memo(
+    summary: dict[str, Any],
+    baseline_name: str = "B0 Full-Schema Control",
+) -> str:
+    """Generate the mandatory 7-field P5 Exit Gate research decision memo (Section 7)."""
+    decision = summary["decision"]
+    bottleneck = decision.get("dominant_category", "Retrieval / Grounding")
+    rec_phase = decision.get("recommended_phase", "P6A")
+    total = summary.get("total_cases", 0)
+    correct = summary.get("correct_cases", 0)
+    incorrect = summary.get("incorrect_cases", 0)
+    acc = summary.get("accuracy_pct", 0.0)
+
+    # Find affected slices (slices with lowest accuracy)
+    affected_slices_lines: list[str] = []
+    slices = summary.get("slices", {})
+    for dim_name, vals in slices.items():
+        if isinstance(vals, dict):
+            for val_name, stats in vals.items():
+                if (
+                    isinstance(stats, dict)
+                    and stats.get("total", 0) > 0
+                    and stats.get("accuracy_pct", 100.0) < acc
+                ):
+                    pct_val = stats["accuracy_pct"]
+                    affected_slices_lines.append(
+                        f"- `{dim_name}={val_name}`: {pct_val:.1f}% EX "
+                        f"({stats['correct']}/{stats['total']})"
+                    )
+
+    affected_slices_str = (
+        "\n".join(affected_slices_lines)
+        if affected_slices_lines
+        else "- multi_table and large schema slices"
+    )
+
+    if rec_phase == "P6A":
+        hypotheses = (
+            "- H1 (Dense Grounding): Bi-encoder dense column/table retrieval outperforms "
+            "BM25 lexical retrieval on large-schema databases.\n"
+            "- H2 (Bridge Closure): Foreign-key closure expansion prevents missing join tables "
+            "(E01) without excessive noise."
+        )
+        why_research = (
+            "Grounding under token budgets in multi-table databases involves a Pareto trade-off "
+            "between recall (avoiding E01/E02) and prompt context noise (E03/E04). Simple "
+            "heuristics fail when column names are ambiguous without semantic embeddings."
+        )
+    elif rec_phase == "P6B":
+        hypotheses = (
+            "- H1 (Relationship Plan): Explicit join path graph search prevents incorrect "
+            "foreign key joins (E10/E12) in deep schemas.\n"
+            "- H2 (Grain Inference): Cardinality inference prevents fanout errors (E13) "
+            "during aggregations."
+        )
+        why_research = (
+            "Join path resolution on multi-hop relationships is an NP-hard Steiner tree problem "
+            "over foreign-key graphs with multiple candidate paths between identical endpoints."
+        )
+    elif rec_phase == "P7":
+        hypotheses = (
+            "- H1 (Semantic Model IR): Semantic layer abstractions (metrics, dimensions) "
+            "eliminate business concept confusion (E20) and measure miscalculations (E21)."
+        )
+        why_research = (
+            "Translating natural language business questions into SQL measures requires "
+            "formal semantic models rather than prompt engineering alone."
+        )
+    else:
+        hypotheses = (
+            "- H1 (Few-shot Prompting): Domain-specific few-shot exemplars reduce pure "
+            "SQL generation logical errors (E40)."
+        )
+        why_research = (
+            "SQL synthesis errors stem from complex nested subquery reasoning and dialect nuances."
+        )
+
+    dom_pct = decision.get("dominant_percentage", 0.0)
+    err_budget_str = json.dumps(summary.get("error_budget_pct", {}), indent=2)
+    evidence_text = (
+        f"Across {total} benchmark cases, CHATSQL baseline achieved {acc:.2f}% Execution "
+        f"Accuracy ({correct} correct, {incorrect} incorrect). Analysis reveals {dom_pct}% "
+        f"of failures are attributed to {bottleneck}. Error budget breakdown:\n{err_budget_str}"
+    )
+    memo = f"""# CHATSQL — Phase 5 Scientific Exit Gate Memo
+
+Observed bottleneck:
+{bottleneck} ({dom_pct}% of error budget)
+
+Evidence:
+{evidence_text}
+
+Affected slices:
+{affected_slices_str}
+
+Baseline:
+{baseline_name}
+
+Hypothesis candidates:
+{hypotheses}
+
+Why this is not only engineering:
+{why_research}
+
+Next research phase:
+{rec_phase} ({decision.get("recommended_phase_name", "")})
+"""
+    return memo
+
+
+def save_error_analysis_artifacts(
+    output_dir: Path,
+    labeled_cases: list[LabeledCase],
+    summary: dict[str, Any],
+) -> None:
+    """Save all P5 deliverables to the specified directory."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Save labeled_cases.jsonl
+    jsonl_path = output_dir / "labeled_cases.jsonl"
+    with jsonl_path.open("w", encoding="utf-8") as f:
+        for case in labeled_cases:
+            f.write(case.model_dump_json() + "\n")
+
+    # 2. Save summary.json
+    json_path = output_dir / "summary.json"
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    # 3. Save summary.md
+    md_path = output_dir / "summary.md"
+    md_content = generate_error_summary_md(summary)
+    md_path.write_text(md_content, encoding="utf-8")
+
+    # 4. Save decision_memo.md (Exit Gate deliverable)
+    memo_path = output_dir / "decision_memo.md"
+    memo_content = generate_decision_memo(summary)
+    memo_path.write_text(memo_content, encoding="utf-8")
+
+    # 5. Save slices/ directory
+    slices_dir = output_dir / "slices"
+    slices_dir.mkdir(parents=True, exist_ok=True)
+    slices_data = summary.get("slices", {})
+    if isinstance(slices_data, dict):
+        for slice_dim, dim_stats in slices_data.items():
+            slice_file = slices_dir / f"{slice_dim}.json"
+            with slice_file.open("w", encoding="utf-8") as f:
+                json.dump(dim_stats, f, indent=2)
+
+
+def _load_jsonl_by_case_id(path: Path) -> dict[str, dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    if not path.exists():
+        return records
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                item = json.loads(line)
+                records[item["case_id"]] = item
+    return records
+
+
+def _retrieved_tables_from_grounding(grounding_record: dict[str, Any]) -> list[str] | None:
+    if "retrieved_tables" in grounding_record:
+        return list(grounding_record["retrieved_tables"])
+
+    grounding = grounding_record.get("grounding")
+    if not isinstance(grounding, dict):
+        return None
+
+    tables = grounding.get("tables")
+    if not isinstance(tables, list):
+        return None
+
+    names: list[str] = []
+    for table in tables:
+        if isinstance(table, str):
+            names.append(table)
+        elif isinstance(table, dict) and isinstance(table.get("name"), str):
+            names.append(table["name"])
+    return names
+
+
+def _metadata_value(
+    key: str,
+    primary: dict[str, Any],
+    fallback: dict[str, Any],
+    default: Any,
+) -> Any:
+    if key in primary:
+        return primary[key]
+    if key in fallback:
+        return fallback[key]
+
+    primary_metadata = primary.get("metadata", {})
+    fallback_metadata = fallback.get("metadata", {})
+    if isinstance(primary_metadata, dict) and key in primary_metadata:
+        return primary_metadata[key]
+    if isinstance(fallback_metadata, dict) and key in fallback_metadata:
+        return fallback_metadata[key]
+    return default
+
+
+def analyze_run_directory(
+    run_dir: Path,
+    output_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Analyze an experiment run directory and generate Phase 5 error analysis artifacts."""
+    from chatsql.analysis.automatic_rules import auto_label_case
+    from chatsql.analysis.slices import aggregate_slice_performance, slice_case
+    from chatsql.domain.gold_case import GoldCase
+    from chatsql.domain.inference_case import InferenceCase
+    from chatsql.domain.result import ExecutionResult, Prediction
+
+    predictions_path = run_dir / "predictions.jsonl"
+    executions_path = run_dir / "executions.jsonl"
+    groundings_path = run_dir / "groundings.jsonl"
+    evaluated_cases_path = run_dir / "evaluated_cases.jsonl"
+
+    if not evaluated_cases_path.exists() and (
+        not predictions_path.exists() or not executions_path.exists()
+    ):
+        raise FileNotFoundError(
+            f"Run directory {run_dir} missing evaluated_cases.jsonl or predictions/executions JSONL"
+        )
+
+    evaluated_by_id = _load_jsonl_by_case_id(evaluated_cases_path)
+    preds_by_id = _load_jsonl_by_case_id(predictions_path)
+    execs_by_id = _load_jsonl_by_case_id(executions_path)
+    groundings_by_id = _load_jsonl_by_case_id(groundings_path)
+
+    labeled_cases: list[LabeledCase] = []
+    slice_records: list[dict[str, Any]] = []
+
+    source_by_id = evaluated_by_id or preds_by_id
+    for case_id, source_dict in source_by_id.items():
+        pred_dict = preds_by_id.get(case_id, source_dict)
+        exec_dict = execs_by_id.get(case_id, source_dict)
+        gr_dict = groundings_by_id.get(case_id, {})
+
+        db_id = _metadata_value("database_id", source_dict, exec_dict, "unknown")
+        question = _metadata_value("question", source_dict, exec_dict, "")
+        gold_sql = _metadata_value("gold_sql", source_dict, exec_dict, "")
+        gold_tables = _metadata_value("gold_tables", source_dict, exec_dict, ())
+        gold_columns = _metadata_value("gold_columns", source_dict, exec_dict, ())
+        retrieved_tables = _retrieved_tables_from_grounding(gr_dict)
+
+        case = InferenceCase(case_id=case_id, question=question, database_id=db_id)
+        gold = GoldCase(
+            case_id=case_id,
+            gold_sql=gold_sql,
+            gold_tables=tuple(gold_tables),
+            gold_columns=tuple(gold_columns),
+        )
+        pred = Prediction(
+            case_id=case_id,
+            predicted_sql=_metadata_value("predicted_sql", source_dict, pred_dict, ""),
+            latency_seconds=_metadata_value("latency_seconds", source_dict, pred_dict, None),
+        )
+        execution = ExecutionResult(
+            case_id=case_id,
+            executed=_metadata_value("executed", source_dict, exec_dict, False),
+            rows=exec_dict.get("rows", []),
+            row_count=exec_dict.get("row_count"),
+            error=_metadata_value("error", source_dict, exec_dict, None),
+            error_kind=exec_dict.get("error_kind"),
+        )
+        labeled = auto_label_case(
+            case=case,
+            gold=gold,
+            prediction=pred,
+            execution=execution,
+            execution_correct=_metadata_value("execution_correct", source_dict, exec_dict, None),
+            grounding_metadata={"retrieved_tables": retrieved_tables}
+            if retrieved_tables is not None
+            else gr_dict,
+        )
+
+        labeled_cases.append(labeled)
+
+        # Compute slices
+        ret_cnt = len(retrieved_tables) if retrieved_tables is not None else None
+        gold_cnt = len(gold_tables) if gold_tables else None
+        sl = slice_case(
+            labeled_case=labeled,
+            table_count_in_catalog=_metadata_value(
+                "catalog_table_count", source_dict, pred_dict, None
+            ),
+            retrieved_table_count=ret_cnt,
+            gold_table_count=gold_cnt,
+        )
+        slice_records.append(sl)
+
+    slice_summary = aggregate_slice_performance(labeled_cases, slice_records)
+    summary = generate_error_summary_json(labeled_cases, slice_summary)
+
+    target_out = output_dir if output_dir is not None else run_dir / "error_analysis"
+    save_error_analysis_artifacts(target_out, labeled_cases, summary)
+
+    return summary

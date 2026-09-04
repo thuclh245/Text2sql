@@ -8,6 +8,7 @@ Output layout:
     ├── groundings.jsonl
     ├── raw_model_outputs.jsonl
     ├── executions.jsonl
+    ├── evaluated_cases.jsonl
     ├── metrics.json
     └── errors.jsonl
 """
@@ -33,6 +34,7 @@ class RunLogger:
         self._groundings_path = self.run_dir / "groundings.jsonl"
         self._raw_outputs_path = self.run_dir / "raw_model_outputs.jsonl"
         self._executions_path = self.run_dir / "executions.jsonl"
+        self._evaluated_cases_path = self.run_dir / "evaluated_cases.jsonl"
         self._errors_path = self.run_dir / "errors.jsonl"
         for path in (
             self._predictions_path,
@@ -40,6 +42,7 @@ class RunLogger:
             self._groundings_path,
             self._raw_outputs_path,
             self._executions_path,
+            self._evaluated_cases_path,
             self._errors_path,
         ):
             path.touch(exist_ok=True)
@@ -77,6 +80,10 @@ class RunLogger:
         """Append one execution record to executions.jsonl."""
         self._append_jsonl(self._executions_path, record)
 
+    def log_evaluated_case(self, record: dict[str, Any]) -> None:
+        """Append one post-evaluation case record for analysis workflows."""
+        self._append_jsonl(self._evaluated_cases_path, record)
+
     def log_error(self, record: dict[str, Any]) -> None:
         """Append one error record to errors.jsonl."""
         self._append_jsonl(self._errors_path, record)
@@ -103,6 +110,7 @@ class RunLogger:
             "groundings.jsonl",
             "raw_model_outputs.jsonl",
             "executions.jsonl",
+            "evaluated_cases.jsonl",
             "metrics.json",
             "errors.jsonl",
         ]

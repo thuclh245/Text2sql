@@ -83,9 +83,7 @@ class RetrievalEvaluator:
         if gold_tables:
             matched_tables = retrieved_tables & gold_tables
             table_recall = len(matched_tables) / len(gold_tables)
-            precision = (
-                len(matched_tables) / len(retrieved_tables) if retrieved_tables else 0.0
-            )
+            precision = len(matched_tables) / len(retrieved_tables) if retrieved_tables else 0.0
             fp_rate = (
                 (len(retrieved_tables) - len(matched_tables)) / len(retrieved_tables)
                 if retrieved_tables

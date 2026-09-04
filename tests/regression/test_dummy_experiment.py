@@ -92,7 +92,7 @@ class TestDummyExperiment:
         self,
         tmp_path: Path,
         simple_catalog: DatabaseCatalog,
-        cases_and_golds: tuple,
+        cases_and_golds: tuple[list[InferenceCase], list[GoldCase]],
     ) -> None:
         cases, golds = cases_and_golds
         run_id = "foundation_dummy_run"
@@ -130,8 +130,9 @@ class TestDummyExperiment:
         assert logger.is_complete(), (
             "Dummy experiment must create: manifest.json, predictions.jsonl, "
             "context_views.jsonl, raw_model_outputs.jsonl, executions.jsonl, "
-            "metrics.json, errors.jsonl"
+            "evaluated_cases.jsonl, metrics.json, errors.jsonl"
         )
+        assert (tmp_path / run_id / "evaluated_cases.jsonl").exists()
 
     def test_manifest_captured_in_run(
         self,

@@ -75,12 +75,8 @@ class _RunAggregator:
         self.prompt_tokens += prediction.prompt_tokens or 0
         self.completion_tokens += prediction.completion_tokens or 0
         self.schema_tokens += int(prediction.metadata.get("schema_token_estimate") or 0)
-        self.prompt_tokens_estimated += int(
-            prediction.metadata.get("prompt_tokens_estimated") or 0
-        )
-        self.estimated_total_tokens += int(
-            prediction.metadata.get("estimated_total_tokens") or 0
-        )
+        self.prompt_tokens_estimated += int(prediction.metadata.get("prompt_tokens_estimated") or 0)
+        self.estimated_total_tokens += int(prediction.metadata.get("estimated_total_tokens") or 0)
         preflight_cost = prediction.metadata.get("estimated_cost_usd_before_call")
         if preflight_cost is None:
             self.cost_preflight_unknown += 1
@@ -126,16 +122,10 @@ class _RunAggregator:
             "sum_completion_tokens": self.completion_tokens,
             "sum_schema_context_tokens": self.schema_tokens,
             "sum_prompt_tokens_estimated": self.prompt_tokens_estimated,
-            "mean_prompt_tokens_estimated": round(
-                self.prompt_tokens_estimated / scored, 3
-            ),
+            "mean_prompt_tokens_estimated": round(self.prompt_tokens_estimated / scored, 3),
             "sum_total_tokens_estimated_preflight": self.estimated_total_tokens,
-            "mean_total_tokens_estimated_preflight": round(
-                self.estimated_total_tokens / scored, 3
-            ),
-            "estimated_cost_usd_before_call": round(
-                self.estimated_cost_usd_before_call, 6
-            ),
+            "mean_total_tokens_estimated_preflight": round(self.estimated_total_tokens / scored, 3),
+            "estimated_cost_usd_before_call": round(self.estimated_cost_usd_before_call, 6),
             "cost_preflight_estimate_complete": self.cost_preflight_unknown == 0,
             "estimated_cost_usd": round(self.cost_usd, 6),
             "cost_estimate_complete": self.cost_unknown == 0,
@@ -173,9 +163,7 @@ class _RetrievalAggregator:
             "retrieval_total": self.total,
             "mean_table_recall": round(self.table_recall / scored, 4),
             "mean_column_recall": round(self.column_recall / scored, 4),
-            "mean_complete_schema_recall": round(
-                self.complete_schema_recall / scored, 4
-            ),
+            "mean_complete_schema_recall": round(self.complete_schema_recall / scored, 4),
             "mean_precision": round(self.precision / scored, 4),
             "mean_false_positive_rate": round(self.false_positive_rate / scored, 4),
             "mean_retrieved_tables": round(self.retrieved_tables / scored, 3),
@@ -236,17 +224,17 @@ class ExperimentRunner:
                 self.logger.log_error(
                     {"case_id": case.case_id, "component": "grounder", "error": str(exc)}
                 )
-                records.append(
-                    ExperimentRecord(
-                        case_id=case.case_id,
-                        database_id=case.database_id,
-                        question=case.question,
-                        predicted_sql="",
-                        executed=False,
-                        execution_correct=False,
-                        error=str(exc),
-                    )
+                record = ExperimentRecord(
+                    case_id=case.case_id,
+                    database_id=case.database_id,
+                    question=case.question,
+                    predicted_sql="",
+                    executed=False,
+                    execution_correct=False,
+                    error=str(exc),
                 )
+                records.append(record)
+                self.logger.log_evaluated_case(_analysis_record(record, gold))
                 aggregate.strategy_errors += 1
                 continue
 
@@ -268,17 +256,17 @@ class ExperimentRunner:
                 self.logger.log_error(
                     {"case_id": case.case_id, "component": "strategy", "error": str(exc)}
                 )
-                records.append(
-                    ExperimentRecord(
-                        case_id=case.case_id,
-                        database_id=case.database_id,
-                        question=case.question,
-                        predicted_sql="",
-                        executed=False,
-                        execution_correct=False,
-                        error=str(exc),
-                    )
+                record = ExperimentRecord(
+                    case_id=case.case_id,
+                    database_id=case.database_id,
+                    question=case.question,
+                    predicted_sql="",
+                    executed=False,
+                    execution_correct=False,
+                    error=str(exc),
                 )
+                records.append(record)
+                self.logger.log_evaluated_case(_analysis_record(record, gold))
                 aggregate.strategy_errors += 1
                 continue
 
@@ -328,19 +316,19 @@ class ExperimentRunner:
 
             metrics["retrieval"] = retrieval_metrics.__dict__
             aggregate.observe(prediction, execution, metrics)
-            records.append(
-                ExperimentRecord(
-                    case_id=case.case_id,
-                    database_id=case.database_id,
-                    question=case.question,
-                    predicted_sql=prediction.predicted_sql,
-                    executed=execution.executed,
-                    execution_correct=bool(metrics.get("execution_correct", False)),
-                    error=execution.error,
-                    latency_seconds=prediction.latency_seconds,
-                    metadata=metrics,
-                )
+            record = ExperimentRecord(
+                case_id=case.case_id,
+                database_id=case.database_id,
+                question=case.question,
+                predicted_sql=prediction.predicted_sql,
+                executed=execution.executed,
+                execution_correct=bool(metrics.get("execution_correct", False)),
+                error=execution.error,
+                latency_seconds=prediction.latency_seconds,
+                metadata=metrics,
             )
+            records.append(record)
+            self.logger.log_evaluated_case(_analysis_record(record, gold))
 
         run_metrics = aggregate.as_dict()
         run_metrics.update(retrieval_aggregate.as_dict())
@@ -384,3 +372,11 @@ def _grounding_to_dict(grounding: GroundingResult) -> dict[str, Any]:
         "scores": grounding.scores,
         "metadata": grounding.metadata,
     }
+
+
+def _analysis_record(record: ExperimentRecord, gold: GoldCase) -> dict[str, Any]:
+    data = record.model_dump(mode="json")
+    data["gold_sql"] = gold.gold_sql
+    data["gold_tables"] = list(gold.gold_tables)
+    data["gold_columns"] = list(gold.gold_columns)
+    return data

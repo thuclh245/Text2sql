@@ -15,9 +15,7 @@ from chatsql.domain.inference_case import InferenceCase
 class LiteSqlInputMapper:
     """Converts InferenceCase + DatabaseCatalog into LitE-SQL expected JSON input."""
 
-    def to_lite_sql_format(
-        self, case: InferenceCase, catalog: DatabaseCatalog
-    ) -> dict[str, Any]:
+    def to_lite_sql_format(self, case: InferenceCase, catalog: DatabaseCatalog) -> dict[str, Any]:
         """Map single inference case to LitE-SQL representation."""
         tables_desc: list[dict[str, Any]] = []
         for table in catalog.tables:

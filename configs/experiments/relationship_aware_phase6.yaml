@@ -1,0 +1,45 @@
+# Phase 6 P6A experiment — relationship-aware grounding.
+#
+# Usage:
+#   chatsql experiment run \
+#     --benchmark bird_mini_dev_sqlite_select_500 \
+#     --strategy full_schema \
+#     --config configs/experiments/relationship_aware_phase6.yaml
+
+experiment:
+  id_prefix: "relationship_aware_phase6"
+  seed: 42
+
+benchmark:
+  name: "bird_mini_dev_sqlite_select_500"
+  split: "mini_dev_sqlite"
+  select_only: true
+  revision: "b3d4bcbbae9a96934ad812551eb400c7a3b23c12"
+  evaluator_revision: "b3d4bcbbae9a96934ad812551eb400c7a3b23c12"
+
+strategy:
+  name: "full_schema"
+
+grounder:
+  name: "relationship-aware"
+  top_k_tables: 5
+  top_k_columns: 30
+  bridge_closure_depth: 1
+  include_fk_neighbors: true
+
+model:
+  provider: "openai"
+  name: "gpt-4o-mini"
+  revision: "2024-07-18"
+  temperature: 0.0
+  max_tokens: 1024
+  timeout_seconds: 60.0
+  max_retries: 3
+
+execution:
+  timeout_seconds: 30.0
+  row_limit: 10000
+
+output:
+  runs_dir: "runs"
+  log_raw_responses: true
