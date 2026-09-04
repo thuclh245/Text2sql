@@ -10,6 +10,9 @@ from typing import Annotated, Any
 import typer
 
 import chatsql.strategies  # noqa: F401 - imported for @register side effects
+import chatsql.grounding.full_schema  # noqa: F401 - imported for @register side effects
+import chatsql.grounding.lite_sql_adapter  # noqa: F401 - imported for @register side effects
+import chatsql.grounding.simple_dense  # noqa: F401 - imported for @register side effects
 from chatsql import __version__
 from chatsql.benchmarks.bird import BirdLoader, BirdPaths, BirdValidator, load_catalogs
 from chatsql.config.loader import load_and_hash
@@ -20,7 +23,7 @@ from chatsql.experiments.manifest import build_manifest
 from chatsql.experiments.registry import get_strategy, list_strategies
 from chatsql.experiments.runner import ExperimentRunner
 from chatsql.generation.llm_client import build_llm_client
-from chatsql.grounding import get_grounder, list_grounders
+from chatsql.grounding.registry import get_grounder, list_grounders
 from chatsql.provenance import sha256_file, short_hash
 
 BIRD_MINI_DEV_SQLITE = "bird_mini_dev_sqlite_select_500"

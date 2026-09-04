@@ -22,7 +22,8 @@ from chatsql.execution.base import BaseExecutor
 from chatsql.experiments.logger import RunLogger
 from chatsql.experiments.manifest import ExperimentManifest
 from chatsql.generation.pricing import estimate_cost_usd
-from chatsql.grounding import FullSchemaGrounder, GroundingResult, SchemaGrounder
+from chatsql.grounding.base import GroundingResult, SchemaGrounder
+from chatsql.grounding.full_schema import FullSchemaGrounder
 
 __all__ = ["BaseEvaluator", "BaseStrategy", "ExperimentRunner"]
 

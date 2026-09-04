@@ -20,7 +20,7 @@ from chatsql.execution import ReadOnlySQLiteExecutor
 from chatsql.experiments.logger import RunLogger
 from chatsql.experiments.manifest import build_manifest
 from chatsql.experiments.runner import BaseEvaluator, BaseStrategy, ExperimentRunner
-from chatsql.grounding import ColumnRef, GroundingResult, SchemaGrounder, TableRef
+from chatsql.grounding.base import ColumnRef, GroundingResult, SchemaGrounder, TableRef
 
 # ---------------------------------------------------------------------------
 # Minimal concrete implementations for testing
