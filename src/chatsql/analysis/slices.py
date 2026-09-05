@@ -19,6 +19,7 @@ def slice_case(
     retrieved_table_count: int | None = None,
     gold_table_count: int | None = None,
     difficulty: str | None = None,
+    join_relationship: str | None = None,
 ) -> dict[str, Any]:
     """Categorize a single labeled case into multi-dimensional slices."""
     gold_sql = labeled_case.gold_sql
@@ -59,7 +60,7 @@ def slice_case(
     # 6. Execution failure slice
     is_exec_failure = labeled_case.primary_error in ("E41", "E42", "E91")
 
-    return {
+    result: dict[str, Any] = {
         "case_id": labeled_case.case_id,
         "table_slice": table_slice,
         "join_depth": join_depth_slice,
@@ -68,6 +69,9 @@ def slice_case(
         "high_noise_retrieval": high_noise,
         "execution_failure": is_exec_failure,
     }
+    if join_relationship is not None:
+        result["join_relationship"] = join_relationship
+    return result
 
 
 def aggregate_slice_performance(
@@ -85,6 +89,8 @@ def aggregate_slice_performance(
         "high_noise_retrieval": {},
         "execution_failure": {},
     }
+    if any("join_relationship" in item for item in slice_data):
+        slices["join_relationship"] = {}
 
     for item in slice_data:
         case_id = item["case_id"]

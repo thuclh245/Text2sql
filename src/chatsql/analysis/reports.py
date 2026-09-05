@@ -483,9 +483,20 @@ def _metadata_value(
 def analyze_run_directory(
     run_dir: Path,
     output_dir: Path | None = None,
+    catalogs: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Analyze an experiment run directory and generate error analysis artifacts."""
+    """Analyze an experiment run directory and generate error analysis artifacts.
+
+    ``catalogs`` (a ``DatabaseCatalog`` per ``database_id``) is optional. When
+    given, each case is additionally classified into the Phase 7A/7B
+    fine-grained join-relationship slice (``1_hop_join``, ``2_hop_join``,
+    ``3_plus_hop_join``, ``multiple_fk_ambiguity``, ``bridge_table_required``)
+    via ``join_slices.classify_join_relationship_slice``; without it, only the
+    coarse ``table_slice``/``join_depth`` dimensions are available, and the
+    Phase 7A/7B gates fall back to those instead.
+    """
     from chatsql.analysis.automatic_rules import auto_label_case
+    from chatsql.analysis.join_slices import classify_join_relationship_slice
     from chatsql.analysis.slices import aggregate_slice_performance, slice_case
     from chatsql.domain.gold_case import GoldCase
     from chatsql.domain.inference_case import InferenceCase
@@ -571,11 +582,20 @@ def analyze_run_directory(
             catalog_table_count = _metadata_value(
                 "catalog_table_count", source_dict, pred_dict, None
             )
+        join_relationship: str | None = None
+        catalog = catalogs.get(db_id) if catalogs else None
+        if catalog is not None:
+            try:
+                join_relationship = classify_join_relationship_slice(case, gold, catalog)
+            except Exception:
+                join_relationship = None
+
         sl = slice_case(
             labeled_case=labeled,
             table_count_in_catalog=catalog_table_count,
             retrieved_table_count=ret_cnt,
             gold_table_count=gold_cnt,
+            join_relationship=join_relationship,
         )
         slice_records.append(sl)
 

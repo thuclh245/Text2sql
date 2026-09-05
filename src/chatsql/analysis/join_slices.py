@@ -90,3 +90,27 @@ JOIN_SLICES: dict[str, JoinSlicePredicate] = {
     "multiple_fk_ambiguity": is_multiple_fk_ambiguity_slice,
     "bridge_table_required": is_bridge_table_required_slice,
 }
+
+
+def classify_join_relationship_slice(
+    case: InferenceCase, gold: GoldCase, catalog: DatabaseCatalog
+) -> str:
+    """Assign one Phase 6B/7A join-relationship slice label to a single case.
+
+    ``bridge_table_required`` and ``multiple_fk_ambiguity`` are cross-cutting
+    structural properties independent of hop count, so they take priority over
+    the plain hop-count buckets — a bridge-required or FK-ambiguous case is
+    reported under that label even if it also happens to be, say, a 2-hop
+    join, since that is the harder property Phase 7A/7B slices target.
+    """
+    if is_bridge_table_required_slice(case, gold, catalog):
+        return "bridge_table_required"
+    if is_multiple_fk_ambiguity_slice(case, gold, catalog):
+        return "multiple_fk_ambiguity"
+    if is_three_plus_hop_slice(case, gold, catalog):
+        return "3_plus_hop_join"
+    if is_two_hop_join_slice(case, gold, catalog):
+        return "2_hop_join"
+    if is_one_hop_join_slice(case, gold, catalog):
+        return "1_hop_join"
+    return "single_table"

@@ -32,11 +32,13 @@ class SemanticRelationshipReasoner:
         allow_bridge_tables: bool = True,
         validate_grain: bool = True,
         cardinality_penalty: float = 0.8,
+        disambiguate_roles: bool = True,
     ) -> None:
         self.max_join_depth = max_join_depth
         self.allow_bridge_tables = allow_bridge_tables
         self.validate_grain = validate_grain
         self.cardinality_penalty = cardinality_penalty
+        self.disambiguate_roles = disambiguate_roles
 
     def reason(
         self,
@@ -55,8 +57,24 @@ class SemanticRelationshipReasoner:
         if not valid_tables:
             return RelationshipPlan(tables=(), edges=(), grain=(), confidence=0.0)
 
+        table_map = {t.name: t for t in catalog.tables}
+        query_text = case.question
+        if case.evidence and isinstance(case.evidence, dict):
+            query_text += " " + " ".join(str(v) for v in case.evidence.values())
+        query_tokens = _tokenize(query_text)
+
+        if len(valid_tables) > 1:
+            # A grounder retrieves a fixed-width candidate set (top-k tables
+            # plus their FK neighbors) regardless of how many the query
+            # actually needs, so most candidates carry no lexical relevance
+            # to this specific question. Without this filter every candidate
+            # is treated as a mandatory join target, forcing bogus joins even
+            # on single-table queries. A table dropped here can still resurface
+            # as a genuine bridge hop via find_paths_between/
+            # connect_tables_shortest, so real junction tables are unaffected.
+            valid_tables = self._filter_relevant_tables(valid_tables, query_tokens, table_map)
+
         if len(valid_tables) == 1:
-            table_map = {t.name: t for t in catalog.tables}
             grain = self._infer_single_table_grain(list(valid_tables)[0], table_map)
             return RelationshipPlan(
                 tables=tuple(sorted(valid_tables)),
@@ -67,11 +85,6 @@ class SemanticRelationshipReasoner:
             )
 
         graph = SchemaRelationshipGraph(catalog)
-        table_map = {t.name: t for t in catalog.tables}
-        query_text = case.question
-        if case.evidence and isinstance(case.evidence, dict):
-            query_text += " " + " ".join(str(v) for v in case.evidence.values())
-        query_tokens = _tokenize(query_text)
 
         # Connect candidate tables into a connected component
         connected_tables, selected_edges, confidence = self._plan_joins(
@@ -81,7 +94,11 @@ class SemanticRelationshipReasoner:
             table_map,
         )
 
-        grain = self._infer_grain(connected_tables, selected_edges, query_tokens, table_map)
+        grain = (
+            self._infer_grain(connected_tables, selected_edges, query_tokens, table_map)
+            if self.validate_grain
+            else ()
+        )
 
         return RelationshipPlan(
             tables=tuple(sorted(connected_tables)),
@@ -96,6 +113,31 @@ class SemanticRelationshipReasoner:
             ),
             confidence=round(confidence, 3),
         )
+
+    def _filter_relevant_tables(
+        self,
+        tables: set[str],
+        query_tokens: set[str],
+        table_map: dict[str, TableInfo],
+    ) -> set[str]:
+        """Drop candidate tables with zero lexical relevance to the query.
+
+        Falls back to the full candidate set if every table scores zero
+        (e.g. a query with no lexical overlap on any table/column name),
+        so a plan is still produced rather than an empty one.
+        """
+        relevant: set[str] = set()
+        for name in tables:
+            table = table_map.get(name)
+            if table is None:
+                continue
+            score = len(query_tokens & _tokenize(name))
+            score += len(query_tokens & _tokenize(table.description))
+            for column in table.columns:
+                score += len(query_tokens & _tokenize(column.name))
+            if score > 0:
+                relevant.add(name)
+        return relevant if relevant else tables
 
     def _plan_joins(
         self,
@@ -195,19 +237,20 @@ class SemanticRelationshipReasoner:
         score = 25.0 / (1.0 + len(path))
 
         for edge in path:
-            # 1. Role semantic match on FK column names
-            # E.g., for flight departures vs arrivals, column name 'departure_airport'
-            for col in edge.left_columns:
-                score += 3.0 * len(query_tokens & _tokenize(col))
-            for col in edge.right_columns:
-                score += 3.0 * len(query_tokens & _tokenize(col))
+            if self.disambiguate_roles:
+                # 1. Role semantic match on FK column names
+                # E.g., for flight departures vs arrivals, column name 'departure_airport'
+                for col in edge.left_columns:
+                    score += 3.0 * len(query_tokens & _tokenize(col))
+                for col in edge.right_columns:
+                    score += 3.0 * len(query_tokens & _tokenize(col))
 
-            # 2. Table name & description matches
-            for tbl_name in (edge.left_table, edge.right_table):
-                tbl = table_map.get(tbl_name)
-                if tbl:
-                    score += 2.0 * len(query_tokens & _tokenize(tbl.name))
-                    score += 1.0 * len(query_tokens & _tokenize(tbl.description))
+                # 2. Table name & description matches
+                for tbl_name in (edge.left_table, edge.right_table):
+                    tbl = table_map.get(tbl_name)
+                    if tbl:
+                        score += 2.0 * len(query_tokens & _tokenize(tbl.name))
+                        score += 1.0 * len(query_tokens & _tokenize(tbl.description))
 
             # 3. Cardinality validation: 1-to-1 is safe and preserves grain
             if self.validate_grain and edge.cardinality == Cardinality.ONE_TO_ONE.value:

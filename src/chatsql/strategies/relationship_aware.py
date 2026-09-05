@@ -24,10 +24,14 @@ from chatsql.relationships.reasoner import SemanticRelationshipReasoner
 class RelationshipAwareStrategy(BaseStrategy):
     """Text-to-SQL strategy augmented with semantic relationship and join-path planning."""
 
-    def __init__(self, llm_client: BaseLLMClient) -> None:
+    def __init__(
+        self,
+        llm_client: BaseLLMClient,
+        reasoner_config: dict[str, Any] | None = None,
+    ) -> None:
         self._client = llm_client
         self._prompt_builder = RelationshipAwarePromptBuilder()
-        self._reasoner = SemanticRelationshipReasoner()
+        self._reasoner = SemanticRelationshipReasoner(**(reasoner_config or {}))
 
     def run(self, case: InferenceCase, catalog: DatabaseCatalog) -> Prediction:
         """Generate a SQL prediction with explicit join-path reasoning."""

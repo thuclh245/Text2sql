@@ -168,14 +168,23 @@ def experiment_run(
         typer.echo("Catalog load failed for:\n  " + "\n  ".join(catalog_failures))
         raise typer.Exit(code=1)
 
+    grounder_name = _normalize_grounder(_require_config_value(grounder_cfg, "grounder.name"))
+
+    if dry_run:
+        typer.echo(
+            f"Dry-run OK: {len(cases)} cases, {len(db_ids)} databases, "
+            f"strategy={strategy}, grounder={grounder_name}, data_hash={short_hash(data_hash)}"
+        )
+        raise typer.Exit()
+
     executor = ReadOnlySQLiteExecutor(
         db_root=paths.db_root(),
         timeout_seconds=execution_cfg.get("timeout_seconds", 30.0),
         row_limit=execution_cfg.get("row_limit", execution_cfg.get("max_rows", 10_000)),
     )
-    grounder_name = _normalize_grounder(_require_config_value(grounder_cfg, "grounder.name"))
     grounder = _build_grounder(grounder_name, grounder_cfg)
-    strategy_impl = strategy_cls(build_llm_client(model_cfg))
+    strategy_cfg = cfg.get("strategy", {})
+    strategy_impl = _build_strategy(strategy_cls, build_llm_client(model_cfg), strategy_cfg)
     evaluator = BirdEXEvaluator(
         executor=executor,
         case_database_ids={case.case_id: case.database_id for case in cases},
@@ -202,13 +211,6 @@ def experiment_run(
 
     runs_dir = Path(cfg.get("output", {}).get("runs_dir", "runs"))
     logger = RunLogger(runs_root=runs_dir, run_id=run_id)
-
-    if dry_run:
-        typer.echo(
-            f"Dry-run OK: {len(cases)} cases, {len(db_ids)} databases, "
-            f"strategy={strategy}, grounder={grounder_name}, data_hash={short_hash(data_hash)}"
-        )
-        raise typer.Exit()
 
     runner = ExperimentRunner(
         strategy=strategy_impl,
@@ -337,6 +339,24 @@ def _normalize_strategy(strategy: str) -> str:
     return _STRATEGY_ALIASES.get(strategy, strategy)
 
 
+def _build_strategy(
+    strategy_cls: Any,
+    llm_client: Any,
+    strategy_cfg: dict[str, Any],
+) -> Any:
+    """Instantiate a strategy, forwarding a ``strategy.reasoner`` config block if set.
+
+    Only ``relationship_aware``-family strategies accept a ``reasoner_config``
+    kwarg (used by the Phase 7B ablation configs to toggle role disambiguation,
+    grain validation, and bridge expansion); other strategies take just the
+    LLM client, so the kwarg is only passed when the config declares it.
+    """
+    reasoner_cfg = strategy_cfg.get("reasoner")
+    if reasoner_cfg:
+        return strategy_cls(llm_client, reasoner_config=reasoner_cfg)
+    return strategy_cls(llm_client)
+
+
 def _normalize_grounder(grounder: str) -> str:
     return _GROUNDER_ALIASES.get(grounder, grounder)
 
@@ -402,6 +422,20 @@ def analysis_run(
         Path | None,
         typer.Option("--output-dir", help="Output directory for error analysis artifacts."),
     ] = None,
+    db_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--db-root",
+            help=(
+                "Root directory containing <db_id>/<db_id>.sqlite files. When "
+                "given, enables the fine-grained join_relationship slice "
+                "(1_hop_join/2_hop_join/3_plus_hop_join/multiple_fk_ambiguity/"
+                "bridge_table_required) used by the Phase 7A/7B gates; "
+                "otherwise those gates fall back to the coarser table_slice/"
+                "join_depth dimensions."
+            ),
+        ),
+    ] = None,
 ) -> None:
     """Analyze a run directory and generate error analysis artifacts."""
     from chatsql.analysis.reports import analyze_run_directory
@@ -410,7 +444,14 @@ def analysis_run(
         typer.echo(f"Run directory not found: {run_dir}")
         raise typer.Exit(code=1)
 
-    summary = analyze_run_directory(run_dir=run_dir, output_dir=output_dir)
+    catalogs = None
+    if db_root is not None:
+        db_ids = sorted(p.name for p in db_root.iterdir() if p.is_dir())
+        catalogs, catalog_failures = load_catalogs(db_root, db_ids)
+        for failure in catalog_failures:
+            typer.echo(f"Warning: could not load catalog for {failure}")
+
+    summary = analyze_run_directory(run_dir=run_dir, output_dir=output_dir, catalogs=catalogs)
     target_out = output_dir if output_dir is not None else run_dir / "error_analysis"
 
     typer.echo(f"Error Analysis complete for: {run_dir.name}")
@@ -593,6 +634,328 @@ def analysis_compare(
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(md, encoding="utf-8")
         typer.echo(f"Comparison report saved to: {output}")
+    else:
+        typer.echo(md)
+
+
+@analysis_app.command("phase7a-benchmark-gate")
+def analysis_relationship_benchmark_gate(
+    full_schema_run: Annotated[
+        Path,
+        typer.Option("--full-schema-run", help="Path to the full_schema control run directory."),
+    ],
+    relationship_aware_run: Annotated[
+        Path,
+        typer.Option(
+            "--relationship-aware-run",
+            help="Path to the relationship_aware candidate run directory.",
+        ),
+    ],
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", help="Directory for Phase 7A gate report artifacts."),
+    ] = None,
+    full_schema_name: Annotated[
+        str,
+        typer.Option("--full-schema-name", help="Display name for the full-schema system."),
+    ] = "full_schema",
+    relationship_aware_name: Annotated[
+        str,
+        typer.Option(
+            "--relationship-aware-name",
+            help="Display name for the relationship-aware system.",
+        ),
+    ] = "relationship_aware",
+) -> None:
+    """Generate the Phase 7A benchmark gate from full-schema and relationship-aware runs."""
+    from chatsql.analysis.relationship_benchmark_gate import (
+        format_relationship_benchmark_gate_report_md,
+        generate_relationship_benchmark_gate_report,
+        save_relationship_benchmark_gate_report,
+    )
+
+    if not full_schema_run.exists():
+        typer.echo(f"Full-schema run directory not found: {full_schema_run}")
+        raise typer.Exit(code=1)
+    if not relationship_aware_run.exists():
+        typer.echo(f"Relationship-aware run directory not found: {relationship_aware_run}")
+        raise typer.Exit(code=1)
+
+    report = generate_relationship_benchmark_gate_report(
+        full_schema_run_dir=full_schema_run,
+        relationship_aware_run_dir=relationship_aware_run,
+        full_schema_name=full_schema_name,
+        relationship_aware_name=relationship_aware_name,
+    )
+    md = format_relationship_benchmark_gate_report_md(report)
+
+    if output_dir is not None:
+        save_relationship_benchmark_gate_report(report, output_dir)
+        typer.echo(f"Phase 7A gate report saved to: {output_dir}")
+    else:
+        typer.echo(md)
+
+
+@analysis_app.command("phase7b-ablation-gate")
+def analysis_relationship_ablation_gate(
+    relationship_aware_run: Annotated[
+        Path,
+        typer.Option(
+            "--relationship-aware-run",
+            help="Path to the full relationship_aware run directory.",
+        ),
+    ],
+    a1_run: Annotated[
+        Path,
+        typer.Option("--a1-run", help="Path to the A1 no-role-disambiguation run directory."),
+    ],
+    a2_run: Annotated[
+        Path,
+        typer.Option("--a2-run", help="Path to the A2 no-grain-validation run directory."),
+    ],
+    a3_run: Annotated[
+        Path,
+        typer.Option("--a3-run", help="Path to the A3 no-bridge-expansion run directory."),
+    ],
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", help="Directory for Phase 7B gate report artifacts."),
+    ] = None,
+    targeted_drop_threshold_pct: Annotated[
+        float,
+        typer.Option(
+            "--targeted-drop-threshold-pct",
+            help="Minimum targeted slice EX drop in percentage points.",
+        ),
+    ] = 5.0,
+) -> None:
+    """Generate the Phase 7B relationship ablation gate report."""
+    from chatsql.analysis.relationship_ablation_gate import (
+        format_relationship_ablation_gate_report_md,
+        generate_relationship_ablation_gate_report,
+        save_relationship_ablation_gate_report,
+    )
+
+    for label, run_dir in (
+        ("Relationship-aware", relationship_aware_run),
+        ("A1", a1_run),
+        ("A2", a2_run),
+        ("A3", a3_run),
+    ):
+        if not run_dir.exists():
+            typer.echo(f"{label} run directory not found: {run_dir}")
+            raise typer.Exit(code=1)
+
+    report = generate_relationship_ablation_gate_report(
+        relationship_aware_run_dir=relationship_aware_run,
+        a1_run_dir=a1_run,
+        a2_run_dir=a2_run,
+        a3_run_dir=a3_run,
+        targeted_drop_threshold_pct=targeted_drop_threshold_pct,
+    )
+    md = format_relationship_ablation_gate_report_md(report)
+
+    if output_dir is not None:
+        save_relationship_ablation_gate_report(report, output_dir)
+        typer.echo(f"Phase 7B ablation gate report saved to: {output_dir}")
+    else:
+        typer.echo(md)
+
+
+@analysis_app.command("phase7c-error-analysis")
+def analysis_relationship_error_analysis(
+    run_dir: Annotated[
+        Path,
+        typer.Option("--run-dir", help="Path to the run directory to analyze."),
+    ],
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", help="Directory for Phase 7C error analysis artifacts."),
+    ] = None,
+    run_name: Annotated[
+        str,
+        typer.Option("--run-name", help="Display name for the analyzed run."),
+    ] = "relationship_aware",
+    db_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--db-root",
+            help=(
+                "Root directory containing <db_id>/<db_id>.sqlite files. "
+                "When given, enables accurate missing-bridge detection via the "
+                "relationship graph; otherwise bridge-required cases fall back "
+                "into the missing_table/wrong_fk/fanout_grain buckets."
+            ),
+        ),
+    ] = None,
+) -> None:
+    """Bucket Phase 7C failures by root cause and identify the main bottleneck."""
+    from chatsql.analysis.relationship_error_analysis import (
+        format_relationship_error_analysis_report_md,
+        generate_relationship_error_analysis_report,
+        save_relationship_error_analysis_report,
+    )
+    from chatsql.analysis.reports import load_labeled_cases
+
+    if not run_dir.exists():
+        typer.echo(f"Run directory not found: {run_dir}")
+        raise typer.Exit(code=1)
+
+    catalogs = None
+    if db_root is not None:
+        labels_path = run_dir / "error_analysis" / "labeled_cases.jsonl"
+        if not labels_path.exists():
+            from chatsql.analysis.reports import analyze_run_directory
+
+            analyze_run_directory(run_dir)
+        db_ids = sorted({c.database_id for c in load_labeled_cases(labels_path)})
+        catalogs, catalog_failures = load_catalogs(db_root, db_ids)
+        for failure in catalog_failures:
+            typer.echo(f"Warning: could not load catalog for {failure}")
+
+    report = generate_relationship_error_analysis_report(
+        run_dir=run_dir,
+        catalogs=catalogs,
+        run_name=run_name,
+    )
+    md = format_relationship_error_analysis_report_md(report)
+
+    if output_dir is not None:
+        save_relationship_error_analysis_report(report, output_dir)
+        typer.echo(f"Phase 7C error analysis report saved to: {output_dir}")
+    else:
+        typer.echo(md)
+
+
+def _load_all_catalogs_under(db_root: Path) -> dict[str, Any]:
+    db_ids = sorted(p.name for p in db_root.iterdir() if p.is_dir())
+    catalogs, catalog_failures = load_catalogs(db_root, db_ids)
+    for failure in catalog_failures:
+        typer.echo(f"Warning: could not load catalog for {failure}")
+    return catalogs
+
+
+@analysis_app.command("phase7d-slice-metrics")
+def analysis_relationship_slice_metrics(
+    run_dir: Annotated[
+        Path,
+        typer.Option("--run-dir", help="Path to the relationship_aware run directory."),
+    ],
+    db_root: Annotated[
+        Path,
+        typer.Option(
+            "--db-root",
+            help="Root directory containing <db_id>/<db_id>.sqlite files.",
+        ),
+    ],
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", help="Directory for Phase 7D slice-metrics artifacts."),
+    ] = None,
+    run_name: Annotated[
+        str,
+        typer.Option("--run-name", help="Display name for the analyzed run."),
+    ] = "relationship_aware",
+) -> None:
+    """Break down relationship-reasoning quality by join slice and find the bottleneck."""
+    from chatsql.analysis.relationship_slice_metrics import (
+        format_relationship_slice_metrics_report_md,
+        generate_relationship_slice_metrics_report,
+        save_relationship_slice_metrics_report,
+    )
+
+    if not run_dir.exists():
+        typer.echo(f"Run directory not found: {run_dir}")
+        raise typer.Exit(code=1)
+    if not db_root.exists():
+        typer.echo(f"DB root not found: {db_root}")
+        raise typer.Exit(code=1)
+
+    catalogs = _load_all_catalogs_under(db_root)
+    report = generate_relationship_slice_metrics_report(
+        run_dir=run_dir,
+        catalogs=catalogs,
+        run_name=run_name,
+    )
+    md = format_relationship_slice_metrics_report_md(report)
+
+    if output_dir is not None:
+        save_relationship_slice_metrics_report(report, output_dir)
+        typer.echo(f"Phase 7D slice-metrics report saved to: {output_dir}")
+    else:
+        typer.echo(md)
+
+
+@analysis_app.command("phase7d-hardening-gate")
+def analysis_relationship_hardening_gate(
+    before_run: Annotated[
+        Path,
+        typer.Option("--before-run", help="Relationship_aware run directory before the fix."),
+    ],
+    after_run: Annotated[
+        Path,
+        typer.Option("--after-run", help="Relationship_aware run directory after the fix."),
+    ],
+    target_slice: Annotated[
+        str,
+        typer.Option(
+            "--target-slice",
+            help=(
+                "Join slice the Phase 7D fix targeted, e.g. bridge_table_required, "
+                "multiple_fk_ambiguity, 3_plus_hop_join, 2_hop_join, 1_hop_join, single_table."
+            ),
+        ),
+    ],
+    db_root: Annotated[
+        Path,
+        typer.Option(
+            "--db-root",
+            help="Root directory containing <db_id>/<db_id>.sqlite files.",
+        ),
+    ],
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", help="Directory for Phase 7D hardening gate artifacts."),
+    ] = None,
+    regression_tolerance: Annotated[
+        float,
+        typer.Option(
+            "--regression-tolerance",
+            help="Maximum allowed quality-score regression on non-target slices.",
+        ),
+    ] = 0.01,
+) -> None:
+    """Verify a Phase 7D fix improved its target slice without regressing others."""
+    from chatsql.analysis.relationship_slice_metrics import (
+        format_relationship_hardening_gate_report_md,
+        generate_relationship_hardening_gate_report,
+        save_relationship_hardening_gate_report,
+    )
+
+    for label, run_dir in (("Before", before_run), ("After", after_run)):
+        if not run_dir.exists():
+            typer.echo(f"{label} run directory not found: {run_dir}")
+            raise typer.Exit(code=1)
+    if not db_root.exists():
+        typer.echo(f"DB root not found: {db_root}")
+        raise typer.Exit(code=1)
+
+    catalogs = _load_all_catalogs_under(db_root)
+    try:
+        report = generate_relationship_hardening_gate_report(
+            before_run_dir=before_run,
+            after_run_dir=after_run,
+            catalogs=catalogs,
+            target_slice=target_slice,
+            regression_tolerance=regression_tolerance,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    md = format_relationship_hardening_gate_report_md(report)
+
+    if output_dir is not None:
+        save_relationship_hardening_gate_report(report, output_dir)
+        typer.echo(f"Phase 7D hardening gate report saved to: {output_dir}")
     else:
         typer.echo(md)
 
