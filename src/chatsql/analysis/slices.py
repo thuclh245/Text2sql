@@ -1,4 +1,4 @@
-"""Slicing logic for error analysis (P5-T03)."""
+"""Slicing logic for error analysis."""
 
 from __future__ import annotations
 

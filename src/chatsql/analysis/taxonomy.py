@@ -1,4 +1,4 @@
-"""Taxonomy V1 definitions for CHATSQL error analysis (P5)."""
+"""Taxonomy definitions for CHATSQL error analysis."""
 
 from __future__ import annotations
 

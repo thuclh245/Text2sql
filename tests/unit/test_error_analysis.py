@@ -1,4 +1,4 @@
-"""Unit tests for Phase 5 Error Analysis module."""
+"""Unit tests for the error analysis module."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from chatsql.analysis import (
     export_cases_for_review,
     generate_decision_memo,
     load_labeled_cases,
-    recommend_next_research_phase,
+    recommend_next_research_track,
     render_case_for_review,
     slice_case,
 )
@@ -135,21 +135,20 @@ def test_render_case_for_review() -> None:
 
 
 def test_decision_rules_recommendation() -> None:
-    # 1. Retrieval dominates -> P6A
-    rec_p6a = recommend_next_research_phase(
+    rec_grounding = recommend_next_research_track(
         {"Retrieval / Grounding": 60.0, "Relationship / Join": 40.0}
     )
-    assert rec_p6a["recommended_phase"] == "P6A"
+    assert rec_grounding["recommended_track"] == "grounding_retrieval_research"
 
-    # 2. Join dominates -> P6B
-    rec_p6b = recommend_next_research_phase(
+    rec_join = recommend_next_research_track(
         {"Retrieval / Grounding": 20.0, "Relationship / Join": 70.0}
     )
-    assert rec_p6b["recommended_phase"] == "P6B"
+    assert rec_join["recommended_track"] == "join_relationship_research"
 
-    # 3. Semantics dominates -> P7
-    rec_p7 = recommend_next_research_phase({"Business / Semantic": 80.0, "SQL Generation": 20.0})
-    assert rec_p7["recommended_phase"] == "P7"
+    rec_semantic = recommend_next_research_track(
+        {"Business / Semantic": 80.0, "SQL Generation": 20.0}
+    )
+    assert rec_semantic["recommended_track"] == "semantic_model_research"
 
 
 def test_slice_case() -> None:
@@ -383,8 +382,8 @@ def test_decision_memo_format_satisfies_exit_gate() -> None:
         "decision": {
             "dominant_category": "Retrieval / Grounding",
             "dominant_percentage": 55.0,
-            "recommended_phase": "P6A",
-            "recommended_phase_name": "P6A — Grounding & Retrieval Research",
+            "recommended_track": "grounding_retrieval_research",
+            "recommended_track_name": "Grounding and Retrieval Research",
             "reason": "Retrieval dominates error budget.",
         },
     }
@@ -396,8 +395,8 @@ def test_decision_memo_format_satisfies_exit_gate() -> None:
     assert "Baseline:" in memo
     assert "Hypothesis candidates:" in memo
     assert "Why this is not only engineering:" in memo
-    assert "Next research phase:" in memo
-    assert "P6A" in memo
+    assert "Next research track:" in memo
+    assert "grounding_retrieval_research" in memo
 
 
 def test_save_error_analysis_artifacts_writes_all_files(tmp_path: Path) -> None:

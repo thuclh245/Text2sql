@@ -1,4 +1,4 @@
-"""Error comparison utility across experiment runs (P5 compare.py)."""
+"""Error comparison utility across experiment runs."""
 
 from __future__ import annotations
 

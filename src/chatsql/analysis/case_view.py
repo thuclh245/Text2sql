@@ -1,4 +1,4 @@
-"""Case rendering view for manual review workflow (P5-T02)."""
+"""Case rendering view for manual review workflow."""
 
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def export_cases_for_review(
     limit: int | None = None,
     case_context: dict[str, dict[str, Any]] | None = None,
 ) -> None:
-    """Export formatted case reviews to a Markdown audit file (P5-T02).
+    """Export formatted case reviews to a Markdown audit file.
 
     ``case_context`` maps case_id to an optional dict with keys
     "retrieved_tables", "retrieved_columns", and "execution_info", used to

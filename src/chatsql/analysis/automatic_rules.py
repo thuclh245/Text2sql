@@ -1,10 +1,10 @@
-"""Automatic diagnostic rules for pre-labeling Text-to-SQL errors (P5-T01)."""
+"""Automatic diagnostic rules for pre-labeling Text-to-SQL errors."""
 
 from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 
 import sqlglot
 from sqlglot import exp
@@ -19,7 +19,11 @@ from chatsql.domain.result import ExecutionResult, Prediction
 def _parse_sql_cached(sql: str) -> tuple[exp.Expression, ...]:
     """Parse SQL once and cache the AST so repeated extract_* calls reuse it."""
     try:
-        return tuple(stmt for stmt in sqlglot.parse(sql, read="sqlite") if stmt is not None)
+        return tuple(
+            cast(exp.Expression, stmt)
+            for stmt in sqlglot.parse(sql, read="sqlite")
+            if stmt is not None
+        )
     except Exception:
         return ()
 

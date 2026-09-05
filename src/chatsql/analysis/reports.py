@@ -1,4 +1,4 @@
-"""Error Budget calculations, Summary Reports, and Research Decision Gate (P5-T04)."""
+"""Error budget calculations, summary reports, and research decision gate."""
 
 from __future__ import annotations
 
@@ -10,59 +10,59 @@ from typing import Any
 from chatsql.analysis.taxonomy import TAXONOMY_MAP, ErrorCategory, LabeledCase
 
 
-def recommend_next_research_phase(error_budget_pct: dict[str, float]) -> dict[str, Any]:
-    """Apply P5 Scientific Decision Rules (Section 6) to determine next phase.
+def recommend_next_research_track(error_budget_pct: dict[str, float]) -> dict[str, Any]:
+    """Apply scientific decision rules to determine the next research track.
 
     Decision rules:
-    - If Retrieval / Grounding dominates (or highest error category) -> P6A (Grounding Research)
-    - If Relationship / Join dominates -> P6B (Join / Relationship Research)
-    - If Business / Semantic dominates -> P7 (Oracle Semantic Experiment)
+    - If Retrieval / Grounding dominates, focus on grounding retrieval research.
+    - If Relationship / Join dominates, focus on join relationship research.
+    - If Business / Semantic dominates, focus on semantic model research.
     - If SQL Generation dominates -> Prompt / LLM Reasoning strategy refinement
     """
     # Exclude NONE (Correct) when finding bottleneck
     error_cats = {k: v for k, v in error_budget_pct.items() if k != ErrorCategory.NONE.value}
     if not error_cats or sum(error_cats.values()) == 0:
         return {
-            "recommended_phase": "P6A",
-            "reason": "Zero errors detected; default to baseline research phase P6A.",
+            "recommended_track": "grounding_retrieval_research",
+            "reason": "Zero errors detected; default to grounding retrieval research.",
         }
 
     dominant_cat = max(error_cats, key=error_cats.get)  # type: ignore[arg-type]
     dominant_pct = error_cats[dominant_cat]
 
     if dominant_cat == ErrorCategory.RETRIEVAL_GROUNDING.value:
-        recommended = "P6A"
-        phase_name = "P6A — Grounding & Retrieval Research"
+        recommended = "grounding_retrieval_research"
+        track_name = "Grounding and Retrieval Research"
         reason = (
             f"Retrieval/Grounding dominates the error budget ({dominant_pct:.1f}% of errors). "
             "Focus must be on schema grounding, dense table/column retrieval, and noise reduction."
         )
     elif dominant_cat == ErrorCategory.RELATIONSHIP_JOIN.value:
-        recommended = "P6B"
-        phase_name = "P6B — Join & Relationship Research"
+        recommended = "join_relationship_research"
+        track_name = "Join and Relationship Research"
         reason = (
             f"Relationship/Join errors dominate the error budget ({dominant_pct:.1f}% of errors). "
             "Focus must be on join path resolution, relationship graphs, and "
             "grain/cardinality analysis."
         )
     elif dominant_cat == ErrorCategory.BUSINESS_SEMANTIC.value:
-        recommended = "P7"
-        phase_name = "P7 — Oracle Semantic Experiment"
+        recommended = "semantic_model_research"
+        track_name = "Semantic Model Research"
         reason = (
             f"Business/Semantic errors dominate the error budget ({dominant_pct:.1f}% of errors). "
             "Prioritize semantic grounding and test Oracle Semantic Model IR."
         )
     else:
-        recommended = "P6A"
-        phase_name = f"P6A / Refinement (Dominant category: {dominant_cat})"
+        recommended = "llm_reasoning_refinement"
+        track_name = f"LLM Reasoning Refinement (Dominant category: {dominant_cat})"
         reason = (
             f"Errors are dominated by {dominant_cat} ({dominant_pct:.1f}%). "
             "LLM generation/prompting or value grounding requires refinement."
         )
 
     return {
-        "recommended_phase": recommended,
-        "recommended_phase_name": phase_name,
+        "recommended_track": recommended,
+        "recommended_track_name": track_name,
         "dominant_category": dominant_cat,
         "dominant_percentage": round(dominant_pct, 2),
         "reason": reason,
@@ -95,7 +95,7 @@ def generate_error_summary_json(
         pct = (count / incorrect_count * 100.0) if incorrect_count > 0 else 0.0
         error_budget_pct[cat] = round(pct, 2)
 
-    decision = recommend_next_research_phase(error_budget_pct)
+    decision = recommend_next_research_track(error_budget_pct)
 
     code_breakdown: list[dict[str, Any]] = []
     for code, count in code_counts.most_common():
@@ -128,7 +128,7 @@ def generate_error_summary_json(
 
 
 def generate_error_summary_md(summary: dict[str, Any]) -> str:
-    """Generate human-readable Markdown summary report for P5 gate review."""
+    """Generate human-readable Markdown summary report for gate review."""
     total = summary["total_cases"]
     correct = summary["correct_cases"]
     incorrect = summary["incorrect_cases"]
@@ -136,7 +136,7 @@ def generate_error_summary_md(summary: dict[str, Any]) -> str:
     decision = summary["decision"]
 
     lines: list[str] = []
-    lines.append("# CHATSQL — Phase 5 Error Analysis Report")
+    lines.append("# CHATSQL Error Analysis Report")
     lines.append("")
     lines.append("## 1. Overall Performance Overview")
     lines.append(f"- **Total Benchmark Cases:** {total}")
@@ -180,8 +180,11 @@ def generate_error_summary_md(summary: dict[str, Any]) -> str:
 
     lines.append("## 5. Scientific Gate & Research Recommendation")
     lines.append(f"- **Observed Bottleneck:** {decision.get('dominant_category', 'N/A')}")
-    lines.append(f"- **Recommended Next Phase:** `{decision.get('recommended_phase', 'P6A')}`")
-    lines.append(f"- **Phase Title:** {decision.get('recommended_phase_name', '')}")
+    lines.append(
+        f"- **Recommended Research Track:** "
+        f"`{decision.get('recommended_track', 'grounding_retrieval_research')}`"
+    )
+    lines.append(f"- **Research Track Title:** {decision.get('recommended_track_name', '')}")
     lines.append(f"- **Scientific Rationale:** {decision['reason']}")
     lines.append("")
 
@@ -192,10 +195,10 @@ def generate_decision_memo(
     summary: dict[str, Any],
     baseline_name: str = "B0 Full-Schema Control",
 ) -> str:
-    """Generate the mandatory 7-field P5 Exit Gate research decision memo (Section 7)."""
+    """Generate the mandatory 7-field research decision memo."""
     decision = summary["decision"]
     bottleneck = decision.get("dominant_category", "Retrieval / Grounding")
-    rec_phase = decision.get("recommended_phase", "P6A")
+    rec_track = decision.get("recommended_track", "grounding_retrieval_research")
     total = summary.get("total_cases", 0)
     correct = summary.get("correct_cases", 0)
     incorrect = summary.get("incorrect_cases", 0)
@@ -224,7 +227,7 @@ def generate_decision_memo(
         else "- multi_table and large schema slices"
     )
 
-    if rec_phase == "P6A":
+    if rec_track == "grounding_retrieval_research":
         hypotheses = (
             "- H1 (Dense Grounding): Bi-encoder dense column/table retrieval outperforms "
             "BM25 lexical retrieval on large-schema databases.\n"
@@ -236,7 +239,7 @@ def generate_decision_memo(
             "between recall (avoiding E01/E02) and prompt context noise (E03/E04). Simple "
             "heuristics fail when column names are ambiguous without semantic embeddings."
         )
-    elif rec_phase == "P6B":
+    elif rec_track == "join_relationship_research":
         hypotheses = (
             "- H1 (Relationship Plan): Explicit join path graph search prevents incorrect "
             "foreign key joins (E10/E12) in deep schemas.\n"
@@ -247,7 +250,7 @@ def generate_decision_memo(
             "Join path resolution on multi-hop relationships is an NP-hard Steiner tree problem "
             "over foreign-key graphs with multiple candidate paths between identical endpoints."
         )
-    elif rec_phase == "P7":
+    elif rec_track == "semantic_model_research":
         hypotheses = (
             "- H1 (Semantic Model IR): Semantic layer abstractions (metrics, dimensions) "
             "eliminate business concept confusion (E20) and measure miscalculations (E21)."
@@ -272,7 +275,7 @@ def generate_decision_memo(
         f"Accuracy ({correct} correct, {incorrect} incorrect). Analysis reveals {dom_pct}% "
         f"of failures are attributed to {bottleneck}. Error budget breakdown:\n{err_budget_str}"
     )
-    memo = f"""# CHATSQL — Phase 5 Scientific Exit Gate Memo
+    memo = f"""# CHATSQL Scientific Exit Gate Memo
 
 Observed bottleneck:
 {bottleneck} ({dom_pct}% of error budget)
@@ -292,8 +295,8 @@ Hypothesis candidates:
 Why this is not only engineering:
 {why_research}
 
-Next research phase:
-{rec_phase} ({decision.get("recommended_phase_name", "")})
+Next research track:
+{rec_track} ({decision.get("recommended_track_name", "")})
 """
     return memo
 
@@ -303,7 +306,7 @@ def save_error_analysis_artifacts(
     labeled_cases: list[LabeledCase],
     summary: dict[str, Any],
 ) -> None:
-    """Save all P5 deliverables to the specified directory."""
+    """Save all error-analysis deliverables to the specified directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Save labeled_cases.jsonl
@@ -355,7 +358,7 @@ def apply_manual_label(
     secondary_errors: tuple[str, ...] | None = None,
     reviewer_notes: str | None = None,
 ) -> LabeledCase:
-    """Persist a reviewer's correction to a case's error label (P5-T01/T02).
+    """Persist a reviewer's correction to a case's error label.
 
     Rewrites labeled_cases.jsonl with the correction and regenerates summary.json,
     summary.md, and decision_memo.md from the corrected labels. Slice buckets are
@@ -481,7 +484,7 @@ def analyze_run_directory(
     run_dir: Path,
     output_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Analyze an experiment run directory and generate Phase 5 error analysis artifacts."""
+    """Analyze an experiment run directory and generate error analysis artifacts."""
     from chatsql.analysis.automatic_rules import auto_label_case
     from chatsql.analysis.slices import aggregate_slice_performance, slice_case
     from chatsql.domain.gold_case import GoldCase

@@ -1,13 +1,13 @@
-# Phase 6 P6A experiment — relationship-aware grounding.
+# Relationship-aware grounding research experiment.
 #
 # Usage:
 #   chatsql experiment run \
 #     --benchmark bird_mini_dev_sqlite_select_500 \
 #     --strategy full_schema \
-#     --config configs/experiments/relationship_aware_phase6.yaml
+#     --config configs/experiments/relationship_aware_grounding_research.yaml
 
 experiment:
-  id_prefix: "relationship_aware_phase6"
+  id_prefix: "relationship_aware_grounding_research"
   seed: 42
 
 benchmark:
@@ -26,6 +26,7 @@ grounder:
   top_k_columns: 30
   bridge_closure_depth: 1
   include_fk_neighbors: true
+  include_key_columns: true
 
 model:
   provider: "openai"

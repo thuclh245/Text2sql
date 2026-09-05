@@ -47,6 +47,7 @@ def test_cli_accepts_documented_grounder_aliases() -> None:
     assert _normalize_grounder("full_schema") == "full-schema"
     assert _normalize_grounder("simple_dense") == "simple-dense"
     assert _normalize_grounder("lite_sql") == "lite-sql"
+    assert _normalize_grounder("relationship_aware") == "relationship-aware"
 
 
 def test_cli_cross_checks_config_aliases() -> None:

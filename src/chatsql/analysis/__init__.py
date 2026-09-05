@@ -1,4 +1,4 @@
-"""Analysis module for CHATSQL Phase 5: Error Taxonomy, Diagnostic Rules, Slices, and Reports."""
+"""Analysis module for CHATSQL error taxonomy, diagnostic rules, slices, and reports."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from chatsql.analysis.reports import (
     generate_error_summary_json,
     generate_error_summary_md,
     load_labeled_cases,
-    recommend_next_research_phase,
+    recommend_next_research_track,
     save_error_analysis_artifacts,
 )
 from chatsql.analysis.slices import aggregate_slice_performance, slice_case
@@ -44,7 +44,7 @@ __all__ = [
     "generate_error_summary_json",
     "generate_error_summary_md",
     "load_labeled_cases",
-    "recommend_next_research_phase",
+    "recommend_next_research_track",
     "render_case_for_review",
     "save_error_analysis_artifacts",
     "slice_case",

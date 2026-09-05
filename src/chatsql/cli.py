@@ -390,7 +390,7 @@ def _require_config_value(section: dict[str, Any], dotted_key: str) -> Any:
     return value
 
 
-analysis_app = typer.Typer(help="Error analysis and diagnostic commands (Phase 5).")
+analysis_app = typer.Typer(help="Error analysis and diagnostic commands.")
 
 
 @analysis_app.command("run")
@@ -401,7 +401,7 @@ def analysis_run(
         typer.Option("--output-dir", help="Output directory for error analysis artifacts."),
     ] = None,
 ) -> None:
-    """Analyze a run directory and generate Phase 5 error analysis artifacts."""
+    """Analyze a run directory and generate error analysis artifacts."""
     from chatsql.analysis.reports import analyze_run_directory
 
     if not run_dir.exists():
@@ -417,8 +417,8 @@ def analysis_run(
     for cat, pct in summary["error_budget_pct"].items():
         typer.echo(f"  - {cat}: {pct}%")
     dec = summary["decision"]
-    phase_name = dec.get("recommended_phase_name", "")
-    typer.echo(f"\nRecommended Next Phase: {dec['recommended_phase']} ({phase_name})")
+    track_name = dec.get("recommended_track_name", "")
+    typer.echo(f"\nRecommended Research Track: {dec['recommended_track']} ({track_name})")
     typer.echo(f"Reason: {dec['reason']}")
     typer.echo(f"Artifacts saved to: {target_out}")
 
@@ -440,7 +440,7 @@ def analysis_view(
         typer.Option("--output", help="Save review sheet to Markdown file."),
     ] = None,
 ) -> None:
-    """View and inspect cases for manual review audit (P5-T02)."""
+    """View and inspect cases for manual review audit."""
     import json
 
     from chatsql.analysis.case_view import export_cases_for_review, render_case_for_review
@@ -475,8 +475,8 @@ def analysis_view(
         typer.echo("No matching cases found.")
         return
 
-    def _load_by_case_id(path: Path) -> dict[str, dict]:
-        records: dict[str, dict] = {}
+    def _load_by_case_id(path: Path) -> dict[str, dict[str, Any]]:
+        records: dict[str, dict[str, Any]] = {}
         if not path.exists():
             return records
         with path.open("r", encoding="utf-8") as f:
@@ -489,7 +489,7 @@ def analysis_view(
     groundings_by_id = _load_by_case_id(run_dir / "groundings.jsonl")
     executions_by_id = _load_by_case_id(run_dir / "executions.jsonl")
 
-    case_context: dict[str, dict] = {}
+    case_context: dict[str, dict[str, Any]] = {}
     for c in cases:
         gr_record = groundings_by_id.get(c.case_id, {})
         exec_record = executions_by_id.get(c.case_id)
@@ -533,7 +533,7 @@ def analysis_label(
         typer.Option("--notes", help="Reviewer notes explaining the correction."),
     ] = None,
 ) -> None:
-    """Persist a manual reviewer correction to a case's error label (P5-T01/T02)."""
+    """Persist a manual reviewer correction to a case's error label."""
     from chatsql.analysis.reports import apply_manual_label
     from chatsql.analysis.taxonomy import TAXONOMY_MAP
 
@@ -607,7 +607,7 @@ def analysis_memo(
         typer.Option("--output", help="Save memo to Markdown file."),
     ] = None,
 ) -> None:
-    """Generate the Phase 5 Exit Gate scientific research memo."""
+    """Generate the scientific research decision memo."""
     import json
 
     from chatsql.analysis.reports import analyze_run_directory, generate_decision_memo

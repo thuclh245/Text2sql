@@ -7,6 +7,7 @@ from collections import deque
 from chatsql.domain.catalog import DatabaseCatalog
 
 RelationshipGraph = dict[str, set[str]]
+RelationshipEdges = tuple[tuple[str, str], ...]
 
 
 def build_relationship_graph(catalog: DatabaseCatalog) -> RelationshipGraph:
@@ -25,6 +26,16 @@ def build_relationship_graph(catalog: DatabaseCatalog) -> RelationshipGraph:
             graph[target_table].add(table.name)
 
     return graph
+
+
+def relationship_edges(graph: RelationshipGraph) -> RelationshipEdges:
+    """Return deterministic undirected graph edges for logging/metadata."""
+    edges: set[tuple[str, str]] = set()
+    for table, neighbors in graph.items():
+        for neighbor in neighbors:
+            edge = tuple(sorted((table, neighbor)))
+            edges.add((edge[0], edge[1]))
+    return tuple(sorted(edges))
 
 
 def expand_fk_neighbors(
@@ -57,6 +68,9 @@ def _parse_reference_table(reference: str) -> str | None:
     reference = reference.strip()
     if "." not in reference:
         return None
-    table_name, _ = reference.split(".", 1)
+    parts = [part.strip('`"[] ') for part in reference.split(".")]
+    if len(parts) < 2:
+        return None
+    table_name = parts[-2]
     table_name = table_name.strip('`"[] ')
     return table_name or None

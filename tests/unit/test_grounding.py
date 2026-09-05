@@ -1,4 +1,4 @@
-"""Unit tests for Phase 4 grounding components, registry, and retrieval evaluator."""
+"""Unit tests for grounding components, registry, and retrieval evaluator."""
 
 from __future__ import annotations
 
@@ -208,6 +208,29 @@ class TestSchemaGraph:
 
         assert graph["broken_refs"] == set()
 
+    def test_schema_qualified_references_use_table_segment(self) -> None:
+        parent = TableInfo(
+            name="users",
+            columns=(ColumnInfo(name="id", data_type="INTEGER", is_primary_key=True),),
+        )
+        child = TableInfo(
+            name="orders",
+            columns=(
+                ColumnInfo(
+                    name="user_id",
+                    data_type="INTEGER",
+                    is_foreign_key=True,
+                    references='"main"."users"."id"',
+                ),
+            ),
+        )
+        catalog = DatabaseCatalog(database_id="shop", tables=(parent, child))
+
+        graph = build_relationship_graph(catalog)
+
+        assert graph["users"] == {"orders"}
+        assert graph["orders"] == {"users"}
+
 
 class TestRelationshipAwareGrounder:
     def test_retrieves_question_matching_tables(
@@ -280,6 +303,51 @@ class TestRelationshipAwareGrounder:
         assert res.metadata["selected_column_count"] == len(res.columns)
         assert "table_scores" in res.metadata
         assert "column_scores" in res.metadata
+        assert "relationship_edges" in res.metadata
+
+    def test_preserves_join_keys_for_selected_relationship_tables(
+        self, relationship_catalog: DatabaseCatalog
+    ) -> None:
+        grounder = RelationshipAwareGrounder(
+            top_k_tables=1,
+            top_k_columns=1,
+            bridge_closure_depth=1,
+            include_fk_neighbors=True,
+        )
+        case = InferenceCase(
+            case_id="c6",
+            question="Show customer names",
+            database_id="shop",
+        )
+
+        res = grounder.ground(case, relationship_catalog)
+
+        assert ("orders", "user_id") in res.column_names
+        assert ("users", "id") in res.column_names
+        assert any(
+            edge == {"source": "orders", "target": "users"}
+            for edge in res.metadata["relationship_edges"]
+        )
+
+    def test_can_disable_key_column_preservation(
+        self, relationship_catalog: DatabaseCatalog
+    ) -> None:
+        grounder = RelationshipAwareGrounder(
+            top_k_tables=1,
+            top_k_columns=1,
+            bridge_closure_depth=1,
+            include_fk_neighbors=True,
+            include_key_columns=False,
+        )
+        case = InferenceCase(
+            case_id="c7",
+            question="Show customer names",
+            database_id="shop",
+        )
+
+        res = grounder.ground(case, relationship_catalog)
+
+        assert len(res.columns) == 1
 
 
 class TestRetrievalEvaluator:
