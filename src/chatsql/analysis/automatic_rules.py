@@ -3,31 +3,37 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from typing import Any
 
 import sqlglot
 from sqlglot import exp
 
 from chatsql.analysis.taxonomy import LabeledCase
-from chatsql.domain.catalog import DatabaseCatalog
 from chatsql.domain.gold_case import GoldCase
 from chatsql.domain.inference_case import InferenceCase
 from chatsql.domain.result import ExecutionResult, Prediction
 
 
+@lru_cache(maxsize=4096)
+def _parse_sql_cached(sql: str) -> tuple[exp.Expression, ...]:
+    """Parse SQL once and cache the AST so repeated extract_* calls reuse it."""
+    try:
+        return tuple(stmt for stmt in sqlglot.parse(sql, read="sqlite") if stmt is not None)
+    except Exception:
+        return ()
+
+
 def extract_tables_from_sql(sql: str) -> set[str]:
     """Extract table names from SQL using sqlglot AST with regex fallback."""
     tables: set[str] = set()
-    try:
-        statements = [stmt for stmt in sqlglot.parse(sql, read="sqlite") if stmt is not None]
-        for stmt in statements:
-            for tbl_node in stmt.find_all(exp.Table):
-                if tbl_node.name:
-                    tables.add(tbl_node.name.lower())
-        if tables:
-            return tables
-    except Exception:
-        pass
+    statements = _parse_sql_cached(sql)
+    for stmt in statements:
+        for tbl_node in stmt.find_all(exp.Table):
+            if tbl_node.name:
+                tables.add(tbl_node.name.lower())
+    if tables:
+        return tables
 
     # Fallback to regex
     sql_clean = re.sub(r"--.*$", "", sql, flags=re.MULTILINE)
@@ -73,22 +79,50 @@ def extract_tables_from_sql(sql: str) -> set[str]:
 def extract_columns_from_sql(sql: str) -> set[str]:
     """Extract column names referenced in SQL using sqlglot with regex fallback."""
     cols: set[str] = set()
-    try:
-        statements = [stmt for stmt in sqlglot.parse(sql, read="sqlite") if stmt is not None]
-        for stmt in statements:
-            for c in stmt.find_all(exp.Column):
-                if c.name and c.name != "*":
-                    cols.add(c.name.lower())
-        if cols:
-            return cols
-    except Exception:
-        pass
+    statements = _parse_sql_cached(sql)
+    for stmt in statements:
+        for c in stmt.find_all(exp.Column):
+            if c.name and c.name != "*":
+                cols.add(c.name.lower())
+    if cols:
+        return cols
 
     matches = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)", sql)
     for _, col in matches:
         if col.lower() not in ("sqlite_master",):
             cols.add(col.lower())
     return cols
+
+
+def extract_select_columns_from_sql(sql: str) -> set[str]:
+    """Extract column names from the SELECT list only (excludes WHERE/JOIN/GROUP BY).
+
+    Used to determine "required output columns" for E02 (missing required column),
+    which is distinct from columns used only in join or filter predicates —
+    those mismatches are diagnosed separately as E12/E30. A bare ``SELECT *``
+    names no specific output columns, so it yields an empty set rather than
+    falling back to whole-query extraction (which would sweep in join/filter
+    columns unrelated to output completeness).
+    """
+    cols: set[str] = set()
+    has_star = False
+    statements = _parse_sql_cached(sql)
+    for stmt in statements:
+        select_node = stmt if isinstance(stmt, exp.Select) else stmt.find(exp.Select)
+        if select_node is None:
+            continue
+        for select_expr in select_node.expressions:
+            if isinstance(select_expr, exp.Star):
+                has_star = True
+                continue
+            for c in select_expr.find_all(exp.Column):
+                if c.name and c.name != "*":
+                    cols.add(c.name.lower())
+    if cols or has_star:
+        return cols
+    if statements:
+        return cols
+    return extract_columns_from_sql(sql)
 
 
 def extract_aggregations(sql: str) -> set[str]:
@@ -113,25 +147,23 @@ def extract_where_literals(sql: str) -> set[str]:
     if not where_match:
         return set()
     where_clause = where_match.group(1)
-    strings = set(re.findall(r"['\"]([^'\"]+)['\"]", where_clause))
-    return strings
+    literals = set(re.findall(r"['\"]([^'\"]+)['\"]", where_clause))
+    literals.update(re.findall(r"[=<>!]=?\s*(-?\d+(?:\.\d+)?)\b", where_clause))
+    return literals
 
 
 def extract_where_columns(sql: str) -> set[str]:
     """Extract column names appearing in the WHERE clause."""
-    try:
-        statements = [stmt for stmt in sqlglot.parse(sql, read="sqlite") if stmt is not None]
-        cols: set[str] = set()
-        for stmt in statements:
-            where_node = stmt.find(exp.Where)
-            if where_node:
-                for c in where_node.find_all(exp.Column):
-                    if c.name and c.name != "*":
-                        cols.add(c.name.lower())
-        if cols:
-            return cols
-    except Exception:
-        pass
+    statements = _parse_sql_cached(sql)
+    cols: set[str] = set()
+    for stmt in statements:
+        where_node = stmt.find(exp.Where)
+        if where_node:
+            for c in where_node.find_all(exp.Column):
+                if c.name and c.name != "*":
+                    cols.add(c.name.lower())
+    if cols:
+        return cols
 
     where_match = re.search(
         r"\bWHERE\b(.*?)(?:\bGROUP BY\b|\bORDER BY\b|\bLIMIT\b|$)", sql, re.IGNORECASE | re.DOTALL
@@ -147,18 +179,15 @@ def extract_where_columns(sql: str) -> set[str]:
 def extract_join_keys(sql: str) -> list[tuple[str, str]]:
     """Extract column pairs compared in ON clauses."""
     keys: list[tuple[str, str]] = []
-    try:
-        statements = [stmt for stmt in sqlglot.parse(sql, read="sqlite") if stmt is not None]
-        for stmt in statements:
-            for eq in stmt.find_all(exp.EQ):
-                if isinstance(eq.left, exp.Column) and isinstance(eq.right, exp.Column):
-                    l_name = eq.left.name.lower()
-                    r_name = eq.right.name.lower()
-                    keys.append((l_name, r_name))
-        if keys:
-            return keys
-    except Exception:
-        pass
+    statements = _parse_sql_cached(sql)
+    for stmt in statements:
+        for eq in stmt.find_all(exp.EQ):
+            if isinstance(eq.left, exp.Column) and isinstance(eq.right, exp.Column):
+                l_name = eq.left.name.lower()
+                r_name = eq.right.name.lower()
+                keys.append((l_name, r_name))
+    if keys:
+        return keys
 
     on_matches = re.findall(r"\bON\s+([a-zA-Z0-9_.]+)\s*=\s*([a-zA-Z0-9_.]+)", sql, re.IGNORECASE)
     for l_col, r_col in on_matches:
@@ -174,7 +203,6 @@ def auto_label_case(
     prediction: Prediction,
     execution: ExecutionResult,
     execution_correct: bool | None = None,
-    catalog: DatabaseCatalog | None = None,
     grounding_metadata: dict[str, Any] | None = None,
 ) -> LabeledCase:
     """Pre-label a single inference case based on automated diagnostic rules.
@@ -256,7 +284,7 @@ def auto_label_case(
 
     gold_columns = {c.lower() for c in gold.gold_columns}
     if not gold_columns:
-        gold_columns = extract_columns_from_sql(gold_sql)
+        gold_columns = extract_select_columns_from_sql(gold_sql)
 
     # Check grounding result if provided
     if grounding_metadata:
@@ -311,7 +339,23 @@ def auto_label_case(
             metadata={"missing_tables": sorted(missing_pred_tables)},
         )
 
-    # 3. Relationship / Join check
+    # 3. Column selection check (E02)
+    pred_columns = extract_select_columns_from_sql(pred_sql)
+    missing_pred_cols = gold_columns - pred_columns
+    if gold_columns and missing_pred_cols and len(pred_columns) > 0:
+        return LabeledCase(
+            case_id=case_id,
+            database_id=db_id,
+            question=question,
+            predicted_sql=pred_sql,
+            gold_sql=gold_sql,
+            execution_correct=False,
+            primary_error="E02",
+            secondary_errors=tuple(secondary_errors),
+            metadata={"missing_columns": sorted(missing_pred_cols)},
+        )
+
+    # 4. Relationship / Join check
     gold_has_join = "JOIN" in gold_sql.upper() or len(gold_tables) > 1
     pred_has_join = "JOIN" in pred_sql.upper()
     if gold_has_join and not pred_has_join and len(gold_tables) > 1:
@@ -354,7 +398,7 @@ def auto_label_case(
     if (gold_distinct != pred_distinct) or (gold_groupby != pred_groupby):
         secondary_errors.append("E13")
 
-    # 4. Aggregation / Measure check
+    # 5. Aggregation / Measure check
     gold_aggs = extract_aggregations(gold_sql)
     pred_aggs = extract_aggregations(pred_sql)
     if gold_aggs != pred_aggs and gold_aggs:
@@ -388,7 +432,7 @@ def auto_label_case(
             },
         )
 
-    # 5. Value grounding / Filter check
+    # 6. Value grounding / Filter check
     gold_where = "WHERE" in gold_sql.upper()
     pred_where = "WHERE" in pred_sql.upper()
     if gold_where and not pred_where:
@@ -437,22 +481,6 @@ def auto_label_case(
                 secondary_errors=tuple(secondary_errors),
                 metadata={"gold_literals": sorted(gold_lits), "pred_literals": sorted(pred_lits)},
             )
-
-    # 6. Column selection check (E02)
-    pred_columns = extract_columns_from_sql(pred_sql)
-    missing_pred_cols = gold_columns - pred_columns
-    if gold_columns and missing_pred_cols and len(pred_columns) > 0:
-        return LabeledCase(
-            case_id=case_id,
-            database_id=db_id,
-            question=question,
-            predicted_sql=pred_sql,
-            gold_sql=gold_sql,
-            execution_correct=False,
-            primary_error="E02",
-            secondary_errors=tuple(secondary_errors),
-            metadata={"missing_columns": sorted(missing_pred_cols)},
-        )
 
     # 7. Fallback -> E40 Logical SQL Error
     return LabeledCase(

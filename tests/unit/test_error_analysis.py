@@ -10,14 +10,17 @@ from chatsql.analysis import (
     ErrorCategory,
     LabeledCase,
     analyze_run_directory,
+    apply_manual_label,
     auto_label_case,
     compare_error_runs,
     export_cases_for_review,
     generate_decision_memo,
+    load_labeled_cases,
     recommend_next_research_phase,
     render_case_for_review,
     slice_case,
 )
+from chatsql.analysis.automatic_rules import extract_where_literals
 from chatsql.domain.gold_case import GoldCase
 from chatsql.domain.inference_case import InferenceCase
 from chatsql.domain.result import ExecutionResult, Prediction
@@ -519,3 +522,243 @@ def test_cli_analysis_commands(tmp_path: Path) -> None:
     res_memo = runner.invoke(app, ["analysis", "memo", "--run-dir", str(run_dir)])
     assert res_memo.exit_code == 0
     assert "Scientific Exit Gate Memo" in res_memo.output
+
+    # 4. chatsql analysis label
+    res_label = runner.invoke(
+        app,
+        [
+            "analysis",
+            "label",
+            "--run-dir",
+            str(run_dir),
+            "--case-id",
+            "c1",
+            "--primary-error",
+            "E90",
+            "--notes",
+            "Reviewed manually, evaluator false negative.",
+        ],
+    )
+    assert res_label.exit_code == 0, res_label.output
+    assert "is_manual=True" in res_label.output
+
+    labels_file = run_dir / "error_analysis" / "labeled_cases.jsonl"
+    saved = load_labeled_cases(labels_file)
+    assert saved[0].primary_error == "E90"
+    assert saved[0].is_manual is True
+    assert saved[0].reviewer_notes == "Reviewed manually, evaluator false negative."
+
+
+def test_analyze_run_directory_schema_size_slice_from_grounding_metadata(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run_schema_size"
+    run_dir.mkdir()
+
+    evaluated = [
+        {
+            "case_id": "q1",
+            "database_id": "shop",
+            "question": "Q1",
+            "predicted_sql": "SELECT id FROM orders",
+            "executed": True,
+            "execution_correct": True,
+            "gold_sql": "SELECT id FROM orders",
+            "gold_tables": ["orders"],
+            "gold_columns": ["id"],
+        }
+    ]
+    groundings = [
+        {
+            "case_id": "q1",
+            "grounding": {
+                "tables": [{"name": "orders"}],
+                "columns": [{"table_name": "orders", "column_name": "id"}],
+                "metadata": {"catalog_table_count": 20, "catalog_column_count": 80},
+            },
+        }
+    ]
+
+    with (run_dir / "evaluated_cases.jsonl").open("w", encoding="utf-8") as f:
+        for e in evaluated:
+            f.write(json.dumps(e) + "\n")
+    with (run_dir / "groundings.jsonl").open("w", encoding="utf-8") as f:
+        for g in groundings:
+            f.write(json.dumps(g) + "\n")
+
+    summary = analyze_run_directory(run_dir)
+    assert "large" in next(iter(summary["slices"]["schema_size"]))
+
+
+def test_analyze_run_directory_uses_retrieved_columns_for_e02(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run_missing_col"
+    run_dir.mkdir()
+
+    evaluated = [
+        {
+            "case_id": "q1",
+            "database_id": "shop",
+            "question": "Q1",
+            "predicted_sql": "SELECT id FROM orders",
+            "executed": True,
+            "execution_correct": False,
+            "gold_sql": "SELECT id, status FROM orders",
+            "gold_tables": ["orders"],
+            "gold_columns": ["id", "status"],
+        }
+    ]
+    groundings = [
+        {
+            "case_id": "q1",
+            "grounding": {
+                "tables": [{"name": "orders"}],
+                # "status" was never retrieved, so the predicted SQL structurally
+                # cannot select it -- this must surface as E02, not a generic E40.
+                "columns": [{"table_name": "orders", "column_name": "id"}],
+                "metadata": {},
+            },
+        }
+    ]
+
+    with (run_dir / "evaluated_cases.jsonl").open("w", encoding="utf-8") as f:
+        for e in evaluated:
+            f.write(json.dumps(e) + "\n")
+    with (run_dir / "groundings.jsonl").open("w", encoding="utf-8") as f:
+        for g in groundings:
+            f.write(json.dumps(g) + "\n")
+
+    summary = analyze_run_directory(run_dir)
+    labels_file = run_dir / "error_analysis" / "labeled_cases.jsonl"
+    labeled = load_labeled_cases(labels_file)
+    assert labeled[0].primary_error == "E02"
+    assert summary["error_budget_pct"] == {"Retrieval / Grounding": 100.0}
+
+
+def test_error_code_breakdown_excludes_none(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run_none"
+    run_dir.mkdir()
+
+    evaluated = [
+        {
+            "case_id": "q1",
+            "database_id": "shop",
+            "question": "Q1",
+            "predicted_sql": "SELECT id FROM orders",
+            "executed": True,
+            "execution_correct": True,
+            "gold_sql": "SELECT id FROM orders",
+            "gold_tables": ["orders"],
+            "gold_columns": ["id"],
+        },
+        {
+            "case_id": "q2",
+            "database_id": "shop",
+            "question": "Q2",
+            "predicted_sql": "SELECT id FROM orders",
+            "executed": True,
+            "execution_correct": False,
+            "gold_sql": "SELECT id FROM users",
+            "gold_tables": ["users"],
+            "gold_columns": ["id"],
+        },
+    ]
+    with (run_dir / "evaluated_cases.jsonl").open("w", encoding="utf-8") as f:
+        for e in evaluated:
+            f.write(json.dumps(e) + "\n")
+
+    summary = analyze_run_directory(run_dir)
+    codes = {item["code"] for item in summary["error_code_breakdown"]}
+    assert "NONE" not in codes
+
+
+def test_extract_where_literals_detects_numeric_mismatch() -> None:
+    gold_lits = extract_where_literals("SELECT * FROM orders WHERE priority = 2")
+    pred_lits = extract_where_literals("SELECT * FROM orders WHERE priority = 3")
+    assert gold_lits == {"2"}
+    assert pred_lits == {"3"}
+    assert gold_lits != pred_lits
+
+
+def test_apply_manual_label_persists_correction_and_preserves_slices(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run_manual"
+    run_dir.mkdir()
+
+    evaluated = [
+        {
+            "case_id": "q1",
+            "database_id": "shop",
+            "question": "Q1",
+            "predicted_sql": "SELECT id FROM orders",
+            "executed": True,
+            "execution_correct": False,
+            "gold_sql": "SELECT id FROM users",
+            "gold_tables": ["users"],
+            "gold_columns": ["id"],
+        }
+    ]
+    with (run_dir / "evaluated_cases.jsonl").open("w", encoding="utf-8") as f:
+        for e in evaluated:
+            f.write(json.dumps(e) + "\n")
+
+    analyze_run_directory(run_dir)
+    analysis_dir = run_dir / "error_analysis"
+    original_slices = json.loads((analysis_dir / "summary.json").read_text())["slices"]
+
+    updated = apply_manual_label(
+        analysis_dir,
+        case_id="q1",
+        primary_error="E90",
+        reviewer_notes="Evaluator was wrong; prediction is semantically valid.",
+    )
+    assert updated.is_manual is True
+    assert updated.primary_error == "E90"
+
+    reloaded = load_labeled_cases(analysis_dir / "labeled_cases.jsonl")
+    assert reloaded[0].primary_error == "E90"
+    assert reloaded[0].reviewer_notes == "Evaluator was wrong; prediction is semantically valid."
+
+    new_summary = json.loads((analysis_dir / "summary.json").read_text())
+    assert new_summary["error_budget_pct"] == {"Evaluation / Environment": 100.0}
+    assert new_summary["slices"] == original_slices
+
+
+def test_render_case_for_review_includes_context() -> None:
+    case_label = LabeledCase(
+        case_id="q1",
+        database_id="shop",
+        question="What is the total price?",
+        predicted_sql="SELECT COUNT(price) FROM orders",
+        gold_sql="SELECT SUM(price) FROM orders",
+        execution_correct=False,
+        primary_error="E21",
+    )
+    text = render_case_for_review(
+        case_label,
+        retrieved_tables=("orders",),
+        retrieved_columns=("orders.price",),
+        execution_info={"executed": True, "row_count": 3},
+    )
+    assert "GROUNDED / RETRIEVED SCHEMA" in text
+    assert "orders.price" in text
+    assert "EXECUTION TRACE" in text
+
+
+def test_export_cases_for_review_with_case_context(tmp_path: Path) -> None:
+    cases = [
+        LabeledCase(
+            case_id="c1",
+            database_id="db1",
+            question="Q1",
+            predicted_sql="SELECT 1",
+            gold_sql="SELECT 2",
+            execution_correct=False,
+            primary_error="E01",
+        )
+    ]
+    out_file = tmp_path / "review.md"
+    export_cases_for_review(
+        cases,
+        out_file,
+        case_context={"c1": {"retrieved_tables": ("a", "b"), "execution_info": {"executed": True}}},
+    )
+    content = out_file.read_text(encoding="utf-8")
+    assert "GROUNDED / RETRIEVED SCHEMA" in content
+    assert "a, b" in content

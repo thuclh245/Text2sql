@@ -444,7 +444,11 @@ def analysis_view(
     import json
 
     from chatsql.analysis.case_view import export_cases_for_review, render_case_for_review
-    from chatsql.analysis.reports import analyze_run_directory
+    from chatsql.analysis.reports import (
+        _retrieved_columns_from_grounding,
+        _retrieved_tables_from_grounding,
+        analyze_run_directory,
+    )
     from chatsql.analysis.taxonomy import LabeledCase
 
     if not run_dir.exists():
@@ -471,13 +475,94 @@ def analysis_view(
         typer.echo("No matching cases found.")
         return
 
+    def _load_by_case_id(path: Path) -> dict[str, dict]:
+        records: dict[str, dict] = {}
+        if not path.exists():
+            return records
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    item = json.loads(line)
+                    records[item["case_id"]] = item
+        return records
+
+    groundings_by_id = _load_by_case_id(run_dir / "groundings.jsonl")
+    executions_by_id = _load_by_case_id(run_dir / "executions.jsonl")
+
+    case_context: dict[str, dict] = {}
+    for c in cases:
+        gr_record = groundings_by_id.get(c.case_id, {})
+        exec_record = executions_by_id.get(c.case_id)
+        retrieved_tables = _retrieved_tables_from_grounding(gr_record)
+        retrieved_columns = _retrieved_columns_from_grounding(gr_record)
+        case_context[c.case_id] = {
+            "retrieved_tables": tuple(retrieved_tables) if retrieved_tables is not None else None,
+            "retrieved_columns": tuple(retrieved_columns)
+            if retrieved_columns is not None
+            else None,
+            "execution_info": exec_record,
+        }
+
     if output is not None:
-        export_cases_for_review(cases, output_path=output, limit=limit)
+        export_cases_for_review(cases, output_path=output, limit=limit, case_context=case_context)
         typer.echo(f"Exported {min(len(cases), limit)} cases to {output}")
         return
 
     for c in cases[:limit]:
-        typer.echo(render_case_for_review(c))
+        ctx = case_context.get(c.case_id, {})
+        typer.echo(
+            render_case_for_review(
+                c,
+                retrieved_tables=ctx.get("retrieved_tables"),
+                retrieved_columns=ctx.get("retrieved_columns"),
+                execution_info=ctx.get("execution_info"),
+            )
+        )
+
+
+@analysis_app.command("label")
+def analysis_label(
+    run_dir: Annotated[Path, typer.Option("--run-dir", help="Path to experiment run directory.")],
+    case_id: Annotated[str, typer.Option("--case-id", help="Case ID to correct.")],
+    primary_error: Annotated[
+        str | None,
+        typer.Option("--primary-error", help="Corrected primary error code (e.g. E01, NONE)."),
+    ] = None,
+    notes: Annotated[
+        str | None,
+        typer.Option("--notes", help="Reviewer notes explaining the correction."),
+    ] = None,
+) -> None:
+    """Persist a manual reviewer correction to a case's error label (P5-T01/T02)."""
+    from chatsql.analysis.reports import apply_manual_label
+    from chatsql.analysis.taxonomy import TAXONOMY_MAP
+
+    analysis_dir = run_dir / "error_analysis"
+    if not (analysis_dir / "labeled_cases.jsonl").exists():
+        typer.echo(
+            f"No labeled_cases.jsonl found under {analysis_dir}. Run `chatsql analysis run` first."
+        )
+        raise typer.Exit(code=1)
+
+    if primary_error is not None and primary_error != "NONE" and primary_error not in TAXONOMY_MAP:
+        typer.echo(f"Unknown error code: {primary_error}")
+        raise typer.Exit(code=1)
+
+    try:
+        updated = apply_manual_label(
+            analysis_dir,
+            case_id=case_id,
+            primary_error=primary_error,
+            reviewer_notes=notes,
+        )
+    except KeyError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(
+        f"Updated case {updated.case_id}: primary_error={updated.primary_error}, "
+        f"is_manual={updated.is_manual}"
+    )
 
 
 @analysis_app.command("compare")

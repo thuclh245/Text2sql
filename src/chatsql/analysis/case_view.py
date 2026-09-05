@@ -81,8 +81,14 @@ def export_cases_for_review(
     labeled_cases: list[LabeledCase],
     output_path: Path,
     limit: int | None = None,
+    case_context: dict[str, dict[str, Any]] | None = None,
 ) -> None:
-    """Export formatted case reviews to a Markdown audit file (P5-T02)."""
+    """Export formatted case reviews to a Markdown audit file (P5-T02).
+
+    ``case_context`` maps case_id to an optional dict with keys
+    "retrieved_tables", "retrieved_columns", and "execution_info", used to
+    render the grounded schema and execution trace alongside each case.
+    """
     selected = labeled_cases[:limit] if limit is not None else labeled_cases
     blocks: list[str] = [
         "# CHATSQL — Manual Audit Review Sheet",
@@ -90,7 +96,14 @@ def export_cases_for_review(
         "",
     ]
     for case in selected:
-        blocks.append(f"```text\n{render_case_for_review(case)}\n```\n")
+        ctx = (case_context or {}).get(case.case_id, {})
+        rendered = render_case_for_review(
+            case,
+            retrieved_tables=ctx.get("retrieved_tables"),
+            retrieved_columns=ctx.get("retrieved_columns"),
+            execution_info=ctx.get("execution_info"),
+        )
+        blocks.append(f"```text\n{rendered}\n```\n")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(blocks), encoding="utf-8")

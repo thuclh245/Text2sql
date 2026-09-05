@@ -99,6 +99,8 @@ def generate_error_summary_json(
 
     code_breakdown: list[dict[str, Any]] = []
     for code, count in code_counts.most_common():
+        if code == "NONE":
+            continue
         info = TAXONOMY_MAP.get(code)
         code_breakdown.append(
             {
@@ -155,8 +157,6 @@ def generate_error_summary_md(summary: dict[str, Any]) -> str:
     lines.append("| Code | Error Name | Category | Count | % of Errors |")
     lines.append("|---|---|---|:---:|:---:|")
     for item in summary["error_code_breakdown"]:
-        if item["code"] == "NONE":
-            continue
         row = (
             f"| `{item['code']}` | {item['name']} | {item['category']} | "
             f"{item['count']} | {item['pct_of_errors']:.1f}% |"
@@ -338,6 +338,62 @@ def save_error_analysis_artifacts(
                 json.dump(dim_stats, f, indent=2)
 
 
+def load_labeled_cases(path: Path) -> list[LabeledCase]:
+    """Load labeled cases from a labeled_cases.jsonl file, preserving order."""
+    cases: list[LabeledCase] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if line.strip():
+                cases.append(LabeledCase.model_validate(json.loads(line)))
+    return cases
+
+
+def apply_manual_label(
+    analysis_dir: Path,
+    case_id: str,
+    primary_error: str | None = None,
+    secondary_errors: tuple[str, ...] | None = None,
+    reviewer_notes: str | None = None,
+) -> LabeledCase:
+    """Persist a reviewer's correction to a case's error label (P5-T01/T02).
+
+    Rewrites labeled_cases.jsonl with the correction and regenerates summary.json,
+    summary.md, and decision_memo.md from the corrected labels. Slice buckets are
+    unaffected by relabeling (they depend on execution_correct, not primary_error),
+    so the existing slice breakdown is carried forward unchanged.
+    """
+    labels_path = analysis_dir / "labeled_cases.jsonl"
+    labeled_cases = load_labeled_cases(labels_path)
+
+    updated: LabeledCase | None = None
+    for idx, case in enumerate(labeled_cases):
+        if case.case_id != case_id:
+            continue
+        updates: dict[str, Any] = {"is_manual": True}
+        if primary_error is not None:
+            updates["primary_error"] = primary_error
+        if secondary_errors is not None:
+            updates["secondary_errors"] = secondary_errors
+        if reviewer_notes is not None:
+            updates["reviewer_notes"] = reviewer_notes
+        updated = case.model_copy(update=updates)
+        labeled_cases[idx] = updated
+        break
+
+    if updated is None:
+        raise KeyError(f"case_id {case_id!r} not found in {labels_path}")
+
+    summary_path = analysis_dir / "summary.json"
+    existing_summary = (
+        json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.exists() else {}
+    )
+    slice_summary = existing_summary.get("slices", {})
+
+    summary = generate_error_summary_json(labeled_cases, slice_summary)
+    save_error_analysis_artifacts(analysis_dir, labeled_cases, summary)
+    return updated
+
+
 def _load_jsonl_by_case_id(path: Path) -> dict[str, dict[str, Any]]:
     records: dict[str, dict[str, Any]] = {}
     if not path.exists():
@@ -369,6 +425,36 @@ def _retrieved_tables_from_grounding(grounding_record: dict[str, Any]) -> list[s
         elif isinstance(table, dict) and isinstance(table.get("name"), str):
             names.append(table["name"])
     return names
+
+
+def _retrieved_columns_from_grounding(grounding_record: dict[str, Any]) -> list[str] | None:
+    if "retrieved_columns" in grounding_record:
+        return list(grounding_record["retrieved_columns"])
+
+    grounding = grounding_record.get("grounding")
+    if not isinstance(grounding, dict):
+        return None
+
+    columns = grounding.get("columns")
+    if not isinstance(columns, list):
+        return None
+
+    names: list[str] = []
+    for column in columns:
+        if isinstance(column, str):
+            names.append(column)
+        elif isinstance(column, dict) and isinstance(column.get("column_name"), str):
+            names.append(column["column_name"])
+    return names
+
+
+def _grounding_metadata(grounding_record: dict[str, Any]) -> dict[str, Any]:
+    grounding = grounding_record.get("grounding")
+    if isinstance(grounding, dict):
+        metadata = grounding.get("metadata")
+        if isinstance(metadata, dict):
+            return metadata
+    return {}
 
 
 def _metadata_value(
@@ -434,6 +520,8 @@ def analyze_run_directory(
         gold_tables = _metadata_value("gold_tables", source_dict, exec_dict, ())
         gold_columns = _metadata_value("gold_columns", source_dict, exec_dict, ())
         retrieved_tables = _retrieved_tables_from_grounding(gr_dict)
+        retrieved_columns = _retrieved_columns_from_grounding(gr_dict)
+        grounding_meta = _grounding_metadata(gr_dict)
 
         case = InferenceCase(case_id=case_id, question=question, database_id=db_id)
         gold = GoldCase(
@@ -455,15 +543,19 @@ def analyze_run_directory(
             error=_metadata_value("error", source_dict, exec_dict, None),
             error_kind=exec_dict.get("error_kind"),
         )
+        grounding_metadata: dict[str, Any] = {}
+        if retrieved_tables is not None:
+            grounding_metadata["retrieved_tables"] = retrieved_tables
+        if retrieved_columns is not None:
+            grounding_metadata["retrieved_columns"] = retrieved_columns
+
         labeled = auto_label_case(
             case=case,
             gold=gold,
             prediction=pred,
             execution=execution,
             execution_correct=_metadata_value("execution_correct", source_dict, exec_dict, None),
-            grounding_metadata={"retrieved_tables": retrieved_tables}
-            if retrieved_tables is not None
-            else gr_dict,
+            grounding_metadata=grounding_metadata,
         )
 
         labeled_cases.append(labeled)
@@ -471,11 +563,14 @@ def analyze_run_directory(
         # Compute slices
         ret_cnt = len(retrieved_tables) if retrieved_tables is not None else None
         gold_cnt = len(gold_tables) if gold_tables else None
+        catalog_table_count = grounding_meta.get("catalog_table_count")
+        if catalog_table_count is None:
+            catalog_table_count = _metadata_value(
+                "catalog_table_count", source_dict, pred_dict, None
+            )
         sl = slice_case(
             labeled_case=labeled,
-            table_count_in_catalog=_metadata_value(
-                "catalog_table_count", source_dict, pred_dict, None
-            ),
+            table_count_in_catalog=catalog_table_count,
             retrieved_table_count=ret_cnt,
             gold_table_count=gold_cnt,
         )

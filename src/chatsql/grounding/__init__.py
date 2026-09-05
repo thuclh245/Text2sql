@@ -6,8 +6,8 @@ from chatsql.grounding.base import (
     SchemaGrounder,
     TableRef,
 )
-from chatsql.grounding.relationship_aware import RelationshipAwareGrounder
 from chatsql.grounding.registry import get_grounder, list_grounders, register_grounder
+from chatsql.grounding.relationship_aware import RelationshipAwareGrounder
 from chatsql.grounding.schema_graph import build_relationship_graph, expand_fk_neighbors
 
 __all__ = [

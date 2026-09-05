@@ -21,6 +21,7 @@ from chatsql.experiments.logger import RunLogger
 from chatsql.experiments.manifest import build_manifest
 from chatsql.experiments.runner import BaseEvaluator, BaseStrategy, ExperimentRunner
 from chatsql.grounding.base import ColumnRef, GroundingResult, SchemaGrounder, TableRef
+from chatsql.grounding.relationship_aware import RelationshipAwareGrounder
 
 # ---------------------------------------------------------------------------
 # Minimal concrete implementations for testing
@@ -305,3 +306,50 @@ class TestDummyExperiment:
         assert strategy.seen_catalog.table_names() == ["orders"]
         assert strategy.seen_catalog.tables[0].column_names() == ["id"]
         assert records[0].metadata["retrieval"]["table_recall"] == 1.0
+
+    def test_relationship_aware_experiment_creates_analysis_artifacts(
+        self,
+        tmp_path: Path,
+        simple_catalog: DatabaseCatalog,
+    ) -> None:
+        manifest = build_manifest(
+            experiment_id="relationship-aware-run",
+            seed=0,
+            benchmark_name="BIRD",
+            benchmark_revision="test",
+            benchmark_data_hash="h",
+            evaluator_revision="e",
+            strategy_name="RelationshipAware",
+            grounder_name="relationship-aware",
+            model_provider="stub",
+            model_name="stub",
+            model_revision="v0",
+            model_temperature=0.0,
+        )
+        logger = RunLogger(runs_root=tmp_path, run_id="relationship-aware-run")
+        runner = ExperimentRunner(
+            strategy=DummyStrategy(),
+            evaluator=DummyEvaluator(),
+            logger=logger,
+            executor=ReadOnlySQLiteExecutor(tmp_path),
+            grounder=RelationshipAwareGrounder(),
+        )
+
+        records = runner.run(
+            manifest=manifest,
+            cases=[InferenceCase(case_id="q0", question="Show orders", database_id="shop")],
+            golds=[
+                GoldCase(
+                    case_id="q0",
+                    gold_sql="SELECT id FROM orders",
+                    gold_tables=("orders",),
+                    gold_columns=("id",),
+                )
+            ],
+            catalogs={"shop": simple_catalog},
+        )
+
+        assert len(records) == 1
+        assert logger.is_complete()
+        assert (tmp_path / "relationship-aware-run" / "groundings.jsonl").exists()
+        assert (tmp_path / "relationship-aware-run" / "evaluated_cases.jsonl").exists()

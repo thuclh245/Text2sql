@@ -15,7 +15,15 @@ from chatsql.grounding.schema_graph import build_relationship_graph, expand_fk_n
 def _tokenize(text: str | None) -> set[str]:
     if not text:
         return set()
-    return {word for word in re.findall(r"\w+", text.lower()) if len(word) > 1}
+    tokens: set[str] = set()
+    normalized = text.lower().replace("_", " ")
+    for word in re.findall(r"[a-z0-9]+", normalized):
+        if len(word) <= 1:
+            continue
+        tokens.add(word)
+        if len(word) > 3 and word.endswith("s"):
+            tokens.add(word[:-1])
+    return tokens
 
 
 def _evidence_text(evidence: dict[str, Any] | None) -> str:
@@ -79,9 +87,7 @@ class RelationshipAwareGrounder(SchemaGrounder):
             )
 
         query_tokens = _tokenize(f"{case.question} {_evidence_text(case.evidence)}")
-        table_scores = {
-            table.name: _score_table(query_tokens, table) for table in catalog.tables
-        }
+        table_scores = {table.name: _score_table(query_tokens, table) for table in catalog.tables}
         ranked_tables = sorted(
             catalog.tables,
             key=lambda table: (-table_scores[table.name], table.name),
@@ -96,9 +102,7 @@ class RelationshipAwareGrounder(SchemaGrounder):
             depth=self.bridge_closure_depth,
             include_fk_neighbors=self.include_fk_neighbors,
         )
-        selected_tables = [
-            table for table in catalog.tables if table.name in selected_table_names
-        ]
+        selected_tables = [table for table in catalog.tables if table.name in selected_table_names]
         bridge_tables = sorted(selected_table_names - seed_tables)
 
         selected_columns = self._select_columns(query_tokens, selected_tables)
@@ -173,16 +177,11 @@ class RelationshipAwareGrounder(SchemaGrounder):
             "selected_column_count": selected_column_count,
             "catalog_table_count": catalog_table_count,
             "catalog_column_count": catalog_column_count,
-            "table_reduction_ratio": _reduction_ratio(
-                selected_table_count, catalog_table_count
-            ),
-            "column_reduction_ratio": _reduction_ratio(
-                selected_column_count, catalog_column_count
-            ),
+            "table_reduction_ratio": _reduction_ratio(selected_table_count, catalog_table_count),
+            "column_reduction_ratio": _reduction_ratio(selected_column_count, catalog_column_count),
             "table_scores": {name: round(score, 4) for name, score in table_scores.items()},
             "column_scores": {
-                name: round(score, 4)
-                for name, score in (selected_column_scores or {}).items()
+                name: round(score, 4) for name, score in (selected_column_scores or {}).items()
             },
         }
 

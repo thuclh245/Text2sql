@@ -6,6 +6,7 @@ import pytest
 
 import chatsql.grounding.full_schema  # noqa: F401 - imported for @register side effects
 import chatsql.grounding.lite_sql_adapter  # noqa: F401 - imported for @register side effects
+import chatsql.grounding.relationship_aware  # noqa: F401 - imported for @register side effects
 import chatsql.grounding.simple_dense  # noqa: F401 - imported for @register side effects
 from chatsql.domain.catalog import ColumnInfo, DatabaseCatalog, TableInfo
 from chatsql.domain.gold_case import GoldCase
@@ -14,6 +15,8 @@ from chatsql.evaluation.retrieval import RetrievalEvaluator
 from chatsql.grounding.full_schema import FullSchemaGrounder
 from chatsql.grounding.lite_sql_adapter import LitESQLGrounderAdapter
 from chatsql.grounding.registry import get_grounder, list_grounders
+from chatsql.grounding.relationship_aware import RelationshipAwareGrounder
+from chatsql.grounding.schema_graph import build_relationship_graph, expand_fk_neighbors
 from chatsql.grounding.simple_dense import SimpleDenseGrounder
 
 
@@ -21,10 +24,63 @@ from chatsql.grounding.simple_dense import SimpleDenseGrounder
 def sample_catalog() -> DatabaseCatalog:
     col1 = ColumnInfo(name="id", data_type="INTEGER", is_primary_key=True)
     col2 = ColumnInfo(name="name", data_type="TEXT")
-    col3 = ColumnInfo(name="user_id", data_type="INTEGER", is_foreign_key=True)
+    col3 = ColumnInfo(
+        name="user_id",
+        data_type="INTEGER",
+        is_foreign_key=True,
+        references="users.id",
+    )
     tbl_users = TableInfo(name="users", columns=(col1, col2))
     tbl_orders = TableInfo(name="orders", columns=(col1, col3))
     return DatabaseCatalog(database_id="shop", tables=(tbl_users, tbl_orders))
+
+
+@pytest.fixture()
+def relationship_catalog() -> DatabaseCatalog:
+    users = TableInfo(
+        name="users",
+        columns=(
+            ColumnInfo(name="id", data_type="INTEGER", is_primary_key=True),
+            ColumnInfo(name="name", data_type="TEXT", description="customer display name"),
+        ),
+    )
+    orders = TableInfo(
+        name="orders",
+        columns=(
+            ColumnInfo(name="id", data_type="INTEGER", is_primary_key=True),
+            ColumnInfo(
+                name="user_id",
+                data_type="INTEGER",
+                is_foreign_key=True,
+                references="users.id",
+            ),
+        ),
+    )
+    products = TableInfo(
+        name="products",
+        columns=(
+            ColumnInfo(name="id", data_type="INTEGER", is_primary_key=True),
+            ColumnInfo(name="sku", data_type="TEXT"),
+        ),
+    )
+    broken = TableInfo(
+        name="broken_refs",
+        columns=(
+            ColumnInfo(
+                name="bad_fk",
+                data_type="INTEGER",
+                is_foreign_key=True,
+                references="not_a_reference",
+            ),
+            ColumnInfo(
+                name="missing_fk",
+                data_type="INTEGER",
+                is_foreign_key=True,
+                references="missing_table.id",
+            ),
+        ),
+    )
+    return DatabaseCatalog(database_id="shop", tables=(users, orders, products, broken))
 
 
 @pytest.fixture()
@@ -42,10 +98,15 @@ class TestGroundingRegistry:
         assert "full-schema" in grounders
         assert "simple-dense" in grounders
         assert "lite-sql" in grounders
+        assert "relationship-aware" in grounders
 
     def test_get_grounder_full_schema(self) -> None:
         cls = get_grounder("full-schema")
         assert cls is FullSchemaGrounder
+
+    def test_get_grounder_relationship_aware(self) -> None:
+        cls = get_grounder("relationship-aware")
+        assert cls is RelationshipAwareGrounder
 
 
 class TestFullSchemaGrounder:
@@ -99,6 +160,126 @@ class TestLitESQLGrounderAdapter:
 
         with pytest.raises(NotImplementedError, match="requires an upstream retriever"):
             grounder.ground(sample_case, sample_catalog)
+
+
+class TestSchemaGraph:
+    def test_build_relationship_graph_from_foreign_keys(
+        self, relationship_catalog: DatabaseCatalog
+    ) -> None:
+        graph = build_relationship_graph(relationship_catalog)
+
+        assert graph["users"] == {"orders"}
+        assert graph["orders"] == {"users"}
+        assert graph["products"] == set()
+
+    def test_expand_fk_neighbors_respects_depth(self) -> None:
+        graph = {
+            "users": {"orders"},
+            "orders": {"users", "order_items"},
+            "order_items": {"orders", "products"},
+            "products": {"order_items"},
+        }
+
+        assert expand_fk_neighbors({"users"}, graph, depth=1) == {"users", "orders"}
+        assert expand_fk_neighbors({"users"}, graph, depth=2) == {
+            "users",
+            "orders",
+            "order_items",
+        }
+
+    def test_expand_fk_neighbors_avoids_duplicates_and_can_disable(self) -> None:
+        graph = {"users": {"orders"}, "orders": {"users"}}
+
+        expanded = expand_fk_neighbors({"users", "orders"}, graph, depth=2)
+        disabled = expand_fk_neighbors(
+            {"users"},
+            graph,
+            depth=2,
+            include_fk_neighbors=False,
+        )
+
+        assert expanded == {"users", "orders"}
+        assert disabled == {"users"}
+
+    def test_malformed_and_missing_references_are_ignored(
+        self, relationship_catalog: DatabaseCatalog
+    ) -> None:
+        graph = build_relationship_graph(relationship_catalog)
+
+        assert graph["broken_refs"] == set()
+
+
+class TestRelationshipAwareGrounder:
+    def test_retrieves_question_matching_tables(
+        self, relationship_catalog: DatabaseCatalog
+    ) -> None:
+        grounder = RelationshipAwareGrounder(
+            top_k_tables=1,
+            top_k_columns=10,
+            include_fk_neighbors=False,
+        )
+        case = InferenceCase(
+            case_id="c2",
+            question="Show customer names",
+            database_id="shop",
+        )
+
+        res = grounder.ground(case, relationship_catalog)
+
+        assert res.table_names == {"users"}
+        assert res.metadata["seed_tables"] == ["users"]
+
+    def test_adds_foreign_key_bridge_table(self, relationship_catalog: DatabaseCatalog) -> None:
+        grounder = RelationshipAwareGrounder(
+            top_k_tables=1,
+            top_k_columns=10,
+            bridge_closure_depth=1,
+            include_fk_neighbors=True,
+        )
+        case = InferenceCase(
+            case_id="c3",
+            question="Show customer names",
+            database_id="shop",
+        )
+
+        res = grounder.ground(case, relationship_catalog)
+
+        assert res.table_names == {"users", "orders"}
+        assert res.metadata["seed_tables"] == ["users"]
+        assert res.metadata["bridge_tables"] == ["orders"]
+
+    def test_respects_table_and_column_caps(self, relationship_catalog: DatabaseCatalog) -> None:
+        grounder = RelationshipAwareGrounder(
+            top_k_tables=1,
+            top_k_columns=2,
+            include_fk_neighbors=False,
+        )
+        case = InferenceCase(case_id="c4", question="Show orders", database_id="shop")
+
+        res = grounder.ground(case, relationship_catalog)
+
+        assert len(res.tables) == 1
+        assert len(res.columns) == 2
+        assert {column.column_name for column in res.columns} == {"id", "user_id"}
+
+    def test_records_expected_metadata(self, relationship_catalog: DatabaseCatalog) -> None:
+        grounder = RelationshipAwareGrounder(top_k_tables=1, top_k_columns=2)
+        case = InferenceCase(
+            case_id="c5",
+            question="Show orders",
+            database_id="shop",
+            evidence={"text": "Use customer relationships"},
+        )
+
+        res = grounder.ground(case, relationship_catalog)
+
+        assert res.metadata["grounder"] == "relationship-aware"
+        assert res.metadata["bridge_closure_depth"] == 1
+        assert res.metadata["include_fk_neighbors"] is True
+        assert res.metadata["selected_table_count"] == len(res.tables)
+        assert res.metadata["selected_column_count"] == len(res.columns)
+        assert "table_scores" in res.metadata
+        assert "column_scores" in res.metadata
 
 
 class TestRetrievalEvaluator:

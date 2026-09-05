@@ -11,9 +11,11 @@ from chatsql.analysis.compare import (
 )
 from chatsql.analysis.reports import (
     analyze_run_directory,
+    apply_manual_label,
     generate_decision_memo,
     generate_error_summary_json,
     generate_error_summary_md,
+    load_labeled_cases,
     recommend_next_research_phase,
     save_error_analysis_artifacts,
 )
@@ -32,6 +34,7 @@ __all__ = [
     "LabeledCase",
     "aggregate_slice_performance",
     "analyze_run_directory",
+    "apply_manual_label",
     "auto_label_case",
     "compare_error_runs",
     "compare_run_directories",
@@ -40,6 +43,7 @@ __all__ = [
     "generate_decision_memo",
     "generate_error_summary_json",
     "generate_error_summary_md",
+    "load_labeled_cases",
     "recommend_next_research_phase",
     "render_case_for_review",
     "save_error_analysis_artifacts",
