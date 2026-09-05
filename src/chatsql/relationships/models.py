@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class Cardinality(str, Enum):
+class Cardinality(StrEnum):
     """Cardinality relationship between two tables."""
 
     ONE_TO_ONE = "ONE_TO_ONE"
@@ -17,7 +17,7 @@ class Cardinality(str, Enum):
     MANY_TO_MANY = "MANY_TO_MANY"
 
 
-class RelationType(str, Enum):
+class RelationType(StrEnum):
     """Origin/type of relationship edge."""
 
     FOREIGN_KEY = "FOREIGN_KEY"
@@ -82,7 +82,10 @@ class RelationshipPlan(BaseModel):
         if not self.edges:
             return f"Tables: {', '.join(self.tables)} (no joins)"
         edge_strs = [
-            f"{e.left_table}.{','.join(e.left_columns)} = {e.right_table}.{','.join(e.right_columns)}"
+            (
+                f"{e.left_table}.{','.join(e.left_columns)} = "
+                f"{e.right_table}.{','.join(e.right_columns)}"
+            )
             for e in self.edges
         ]
         return f"Tables: {', '.join(self.tables)} | Joins: {' AND '.join(edge_strs)}"

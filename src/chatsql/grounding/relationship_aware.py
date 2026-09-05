@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from chatsql.domain.catalog import ColumnInfo, DatabaseCatalog, TableInfo
@@ -15,20 +14,7 @@ from chatsql.grounding.schema_graph import (
     expand_fk_neighbors,
     relationship_edges,
 )
-
-
-def _tokenize(text: str | None) -> set[str]:
-    if not text:
-        return set()
-    tokens: set[str] = set()
-    normalized = text.lower().replace("_", " ")
-    for word in re.findall(r"[a-z0-9]+", normalized):
-        if len(word) <= 1:
-            continue
-        tokens.add(word)
-        if len(word) > 3 and word.endswith("s"):
-            tokens.add(word[:-1])
-    return tokens
+from chatsql.text_utils import tokenize as _tokenize
 
 
 def _evidence_text(evidence: dict[str, Any] | None) -> str:
@@ -251,7 +237,14 @@ def _reduction_ratio(selected_count: int, total_count: int) -> float:
 
 
 def _reference_table_name(reference: str) -> str | None:
+    """Resolve the referenced table name, including bare (column-less) references.
+
+    See ``chatsql.grounding.schema_graph._parse_reference_table`` for why a
+    dot-less reference is treated as a table-only reference rather than discarded.
+    """
     parts = [part.strip('`"[] ') for part in reference.strip().split(".")]
-    if len(parts) < 2:
-        return None
-    return parts[-2] or None
+    if len(parts) >= 2:
+        return parts[-2] or None
+    if parts and parts[0]:
+        return parts[0]
+    return None

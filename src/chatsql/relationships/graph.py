@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from collections import deque
-import heapq
-from typing import Iterator
 
-from chatsql.domain.catalog import DatabaseCatalog, TableInfo
-from chatsql.relationships.models import Cardinality, RelationType, RelationshipEdge
+from chatsql.domain.catalog import ColumnInfo, DatabaseCatalog, TableInfo
+from chatsql.relationships.models import Cardinality, RelationshipEdge, RelationType
 
 
 class SchemaRelationshipGraph:
@@ -31,11 +29,7 @@ class SchemaRelationshipGraph:
 
     def edges_between(self, table_a: str, table_b: str) -> list[RelationshipEdge]:
         """Return all direct edges connecting table_a and table_b."""
-        return [
-            edge
-            for edge in self._adj.get(table_a, [])
-            if edge.other_table(table_a) == table_b
-        ]
+        return [edge for edge in self._adj.get(table_a, []) if edge.other_table(table_a) == table_b]
 
     def shortest_path(
         self,
@@ -57,7 +51,9 @@ class SchemaRelationshipGraph:
             if current == target:
                 return path
 
-            for edge in sorted(self._adj.get(current, []), key=lambda e: (e.left_table, e.right_table)):
+            for edge in sorted(
+                self._adj.get(current, []), key=lambda e: (e.left_table, e.right_table)
+            ):
                 neighbor = edge.other_table(current)
                 if neighbor not in visited:
                     visited.add(neighbor)
@@ -77,7 +73,9 @@ class SchemaRelationshipGraph:
 
         results: list[list[RelationshipEdge]] = []
 
-        def dfs(current: str, current_path: list[RelationshipEdge], visited_nodes: set[str]) -> None:
+        def dfs(
+            current: str, current_path: list[RelationshipEdge], visited_nodes: set[str]
+        ) -> None:
             if len(current_path) > max_depth:
                 return
             if current == target:
@@ -101,8 +99,17 @@ class SchemaRelationshipGraph:
     def connect_tables_shortest(
         self,
         required_tables: set[str],
+        already_connected: set[str] | None = None,
     ) -> tuple[set[str], list[RelationshipEdge]]:
         """Connect all required tables using shortest paths (Steiner-like approximation).
+
+        Args:
+            required_tables: Tables that must end up in the connected component.
+            already_connected: An existing connected subset of ``required_tables``
+                to grow from, instead of seeding from the alphabetically-first
+                table. Passing this avoids re-deriving edges between tables that
+                are already known to be connected (e.g. via a caller's own,
+                more precise path selection).
 
         Returns:
             (all_tables_including_bridges, selected_edges)
@@ -112,10 +119,18 @@ class SchemaRelationshipGraph:
         if len(required_tables) == 1:
             return set(required_tables), []
 
-        # Deterministic order
-        sorted_tables = sorted(required_tables)
-        connected_tables: set[str] = {sorted_tables[0]}
-        unconnected_tables = set(sorted_tables[1:])
+        if already_connected:
+            connected_tables: set[str] = set(already_connected) & required_tables
+            unconnected_tables = set(required_tables) - connected_tables
+            if not connected_tables:
+                sorted_tables = sorted(required_tables)
+                connected_tables = {sorted_tables[0]}
+                unconnected_tables = set(sorted_tables[1:])
+        else:
+            # Deterministic order
+            sorted_tables = sorted(required_tables)
+            connected_tables = {sorted_tables[0]}
+            unconnected_tables = set(sorted_tables[1:])
         selected_edges: list[RelationshipEdge] = []
         seen_edges: set[tuple[str, str, tuple[str, ...], tuple[str, ...]]] = set()
 
@@ -166,7 +181,16 @@ class SchemaRelationshipGraph:
 
                 ref_table_info = self.tables[ref_table]
                 left_cols = (column.name,)
-                right_cols = (ref_col,) if ref_col else (ref_table_info.primary_key or (ref_table_info.columns[0].name if ref_table_info.columns else ""),)
+                ref_pk = tuple(c.name for c in ref_table_info.columns if c.is_primary_key)
+                right_cols: tuple[str, ...]
+                if ref_col:
+                    right_cols = (ref_col,)
+                elif ref_pk:
+                    right_cols = ref_pk
+                elif ref_table_info.columns:
+                    right_cols = (ref_table_info.columns[0].name,)
+                else:
+                    right_cols = ("",)
 
                 cardinality = self._infer_cardinality(table, column, ref_table_info)
 
@@ -191,15 +215,12 @@ class SchemaRelationshipGraph:
     def _infer_cardinality(
         self,
         source_table: TableInfo,
-        source_col: Any,
+        source_col: ColumnInfo,
         target_table: TableInfo,
     ) -> Cardinality:
         """Infer cardinality based on PK/unique constraints."""
-        is_src_pk = source_col.is_primary_key or (
-            source_table.primary_key and source_table.primary_key == (source_col.name,)
-        )
-        # If the FK column in the child table is also the primary key of the child table,
-        # it is a 1-to-1 relationship (e.g. extension table). Otherwise many-to-one.
+        src_pk = tuple(c.name for c in source_table.columns if c.is_primary_key)
+        is_src_pk = src_pk == (source_col.name,)
         if is_src_pk:
             return Cardinality.ONE_TO_ONE
         return Cardinality.MANY_TO_ONE

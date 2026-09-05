@@ -65,12 +65,16 @@ def expand_fk_neighbors(
 
 
 def _parse_reference_table(reference: str) -> str | None:
-    reference = reference.strip()
-    if "." not in reference:
-        return None
-    parts = [part.strip('`"[] ') for part in reference.split(".")]
-    if len(parts) < 2:
-        return None
-    table_name = parts[-2]
-    table_name = table_name.strip('`"[] ')
-    return table_name or None
+    """Resolve the referenced table name, including bare (column-less) references.
+
+    A dot-less reference (e.g. ``REFERENCES parent_table`` with no explicit
+    column) is valid SQL shorthand for the parent's primary key, so it is
+    treated as a table-only reference rather than discarded. Callers are
+    expected to validate the returned name against the catalog's table set.
+    """
+    parts = [part.strip('`"[] ') for part in reference.strip().split(".")]
+    if len(parts) >= 2:
+        return parts[-2] or None
+    if parts and parts[0]:
+        return parts[0]
+    return None

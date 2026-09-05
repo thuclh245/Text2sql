@@ -54,8 +54,14 @@ def _render_schema(catalog: DatabaseCatalog) -> str:
         # Foreign keys
         for col in table.columns:
             if col.is_foreign_key and col.references:
-                ref_table, ref_col = col.references.split(".", 1)
-                lines.append(f"    FOREIGN KEY ({col.name}) REFERENCES {ref_table}({ref_col})")
+                ref_parts = [part.strip('`"[] ') for part in col.references.strip().split(".")]
+                if len(ref_parts) >= 2:
+                    ref_table, ref_col = ref_parts[-2], ref_parts[-1]
+                    lines.append(
+                        f"    FOREIGN KEY ({col.name}) REFERENCES {ref_table}({ref_col})"
+                    )
+                elif ref_parts and ref_parts[0]:
+                    lines.append(f"    FOREIGN KEY ({col.name}) REFERENCES {ref_parts[0]}")
         lines.append(");\n")
     return "\n".join(lines)
 

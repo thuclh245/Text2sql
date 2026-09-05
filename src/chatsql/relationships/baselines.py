@@ -2,28 +2,15 @@
 
 from __future__ import annotations
 
-import re
-from typing import Any
-
 from chatsql.domain.catalog import DatabaseCatalog
 from chatsql.domain.inference_case import InferenceCase
 from chatsql.relationships.graph import SchemaRelationshipGraph
 from chatsql.relationships.models import RelationshipEdge, RelationshipPlan
-
-
-def _tokenize(text: str | None) -> set[str]:
-    if not text:
-        return set()
-    tokens: set[str] = set()
-    normalized = text.lower().replace("_", " ")
-    for word in re.findall(r"[a-z0-9]+", normalized):
-        if len(word) > 1:
-            tokens.add(word)
-    return tokens
+from chatsql.text_utils import tokenize as _tokenize
 
 
 class DeclaredFKShortestPathBaseline:
-    """Baseline 1: Connects candidate tables via declared FK shortest path (Steiner approximation)."""
+    """Baseline 1: Connects tables via declared FK shortest path (Steiner approx)."""
 
     def plan(
         self,
@@ -146,7 +133,9 @@ class LexicalRerankerBaseline:
 
             for start in sorted(connected):
                 for target in sorted(remaining):
-                    candidate_paths = graph.find_paths_between(start, target, max_depth=self.max_depth)
+                    candidate_paths = graph.find_paths_between(
+                        start, target, max_depth=self.max_depth
+                    )
                     for path in candidate_paths:
                         score = self._score_path(path, q_tokens, catalog)
                         if score > best_score:

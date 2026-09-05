@@ -17,6 +17,13 @@ from chatsql.domain.gold_case import GoldCase
 from chatsql.domain.inference_case import InferenceCase
 from chatsql.domain.result import ExecutionResult, ExperimentRecord, Prediction
 from chatsql.evaluation.base import BaseEvaluator
+from chatsql.evaluation.relationship_metrics import (
+    RelationshipMetrics,
+    aggregate_relationship_metrics,
+    compute_case_relationship_metrics,
+    extract_gold_relationship_edges,
+    extract_gold_relationship_tables,
+)
 from chatsql.evaluation.retrieval import RetrievalEvaluator, RetrievalMetrics
 from chatsql.execution.base import BaseExecutor
 from chatsql.experiments.logger import RunLogger
@@ -24,6 +31,7 @@ from chatsql.experiments.manifest import ExperimentManifest
 from chatsql.generation.pricing import estimate_cost_usd
 from chatsql.grounding.base import GroundingResult, SchemaGrounder
 from chatsql.grounding.full_schema import FullSchemaGrounder
+from chatsql.relationships.models import RelationshipPlan
 
 __all__ = ["BaseEvaluator", "BaseStrategy", "ExperimentRunner"]
 
@@ -173,6 +181,21 @@ class _RetrievalAggregator:
         }
 
 
+class _RelationshipMetricsAggregator:
+    """Accumulates relationship-planning metrics across cases with a plan."""
+
+    def __init__(self) -> None:
+        self._case_metrics: list[dict[str, Any]] = []
+
+    def observe(self, metrics: dict[str, Any] | None) -> None:
+        if metrics is not None:
+            self._case_metrics.append(metrics)
+
+    def as_dict(self) -> dict[str, Any]:
+        aggregate = aggregate_relationship_metrics(self._case_metrics)
+        return _relationship_metrics_to_dict(aggregate)
+
+
 class ExperimentRunner:
     """Orchestrates a full benchmark run: strategy -> executor -> evaluator -> log."""
 
@@ -206,6 +229,7 @@ class ExperimentRunner:
         records: list[ExperimentRecord] = []
         aggregate = _RunAggregator(model_name=manifest.model.name)
         retrieval_aggregate = _RetrievalAggregator()
+        relationship_aggregate = _RelationshipMetricsAggregator()
 
         for case, gold in zip(cases, golds, strict=True):
             if case.case_id != gold.case_id:
@@ -304,6 +328,10 @@ class ExperimentRunner:
                 gold_tables=gold.gold_tables,
                 gold_columns=gold.gold_columns,
             )
+            relationship_metrics = _compute_relationship_metrics(prediction, gold, catalog)
+            if relationship_metrics is not None:
+                metrics["relationship"] = relationship_metrics
+            relationship_aggregate.observe(relationship_metrics)
             if metrics.get("error") and not execution.executed:
                 self.logger.log_error(
                     {
@@ -332,12 +360,19 @@ class ExperimentRunner:
 
         run_metrics = aggregate.as_dict()
         run_metrics.update(retrieval_aggregate.as_dict())
+        run_metrics.update(relationship_aggregate.as_dict())
         self.logger.write_metrics(run_metrics)
         return records
 
 
 def _project_catalog(catalog: DatabaseCatalog, grounding: GroundingResult) -> DatabaseCatalog:
-    """Return a catalog containing only the schema selected by ``grounding``."""
+    """Return a catalog containing only the schema selected by ``grounding``.
+
+    Primary-key and foreign-key columns are always retained for a selected table
+    even when the grounder didn't select them: dropping them breaks join
+    construction (e.g. SchemaRelationshipGraph) for any downstream strategy,
+    independent of the grounder's column-relevance scoring.
+    """
     selected_tables = {table.name for table in grounding.tables}
     selected_tables.update(column.table_name for column in grounding.columns)
 
@@ -352,7 +387,16 @@ def _project_catalog(catalog: DatabaseCatalog, grounding: GroundingResult) -> Da
         if table.name not in selected_tables:
             continue
         selected_columns = selected_columns_by_table.get(table.name) or set()
-        columns = tuple(column for column in table.columns if column.name in selected_columns)
+        key_columns = {
+            column.name
+            for column in table.columns
+            if column.is_primary_key or column.is_foreign_key
+        }
+        columns = tuple(
+            column
+            for column in table.columns
+            if column.name in selected_columns or column.name in key_columns
+        )
         projected_tables.append(
             TableInfo(
                 name=table.name,
@@ -380,3 +424,34 @@ def _analysis_record(record: ExperimentRecord, gold: GoldCase) -> dict[str, Any]
     data["gold_tables"] = list(gold.gold_tables)
     data["gold_columns"] = list(gold.gold_columns)
     return data
+
+
+def _compute_relationship_metrics(
+    prediction: Prediction,
+    gold: GoldCase,
+    catalog: DatabaseCatalog,
+) -> dict[str, Any] | None:
+    raw_plan = prediction.metadata.get("relationship_plan")
+    if not isinstance(raw_plan, dict):
+        return None
+
+    try:
+        plan = RelationshipPlan.model_validate(raw_plan)
+    except Exception:  # noqa: BLE001 - metrics should not fail the experiment run
+        return None
+
+    gold_edges = extract_gold_relationship_edges(gold.gold_sql, catalog)
+    gold_tables = set(gold.gold_tables) or extract_gold_relationship_tables(gold.gold_sql, catalog)
+    return compute_case_relationship_metrics(plan, gold_edges, gold_tables)
+
+
+def _relationship_metrics_to_dict(metrics: RelationshipMetrics) -> dict[str, Any]:
+    return {
+        "relationship_total": metrics.total_cases,
+        "relationship_edge_recall": metrics.edge_recall,
+        "relationship_edge_precision": metrics.edge_precision,
+        "relationship_wrong_edge_rate": metrics.wrong_edge_rate,
+        "relationship_path_coverage": metrics.path_coverage,
+        "relationship_exact_path_accuracy": metrics.exact_path_accuracy,
+        "relationship_mean_hop_count": metrics.mean_hop_count,
+    }

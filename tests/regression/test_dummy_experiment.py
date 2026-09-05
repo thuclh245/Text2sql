@@ -61,6 +61,17 @@ class OrdersOnlyGrounder(SchemaGrounder):
         )
 
 
+class DropsForeignKeyColumnGrounder(SchemaGrounder):
+    """Selects tables but omits their FK/PK columns, to exercise the runner's
+    key-column retention safeguard in ``_project_catalog``."""
+
+    def ground(self, case: InferenceCase, catalog: DatabaseCatalog) -> GroundingResult:
+        return GroundingResult(
+            tables=(TableRef(name="customers"), TableRef(name="orders")),
+            columns=(ColumnRef(table_name="orders", column_name="order_date"),),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -71,6 +82,28 @@ def simple_catalog() -> DatabaseCatalog:
     col = ColumnInfo(name="id", data_type="INTEGER", is_primary_key=True)
     table = TableInfo(name="orders", columns=(col,))
     return DatabaseCatalog(database_id="shop", tables=(table,))
+
+
+@pytest.fixture()
+def relational_catalog() -> DatabaseCatalog:
+    customers = TableInfo(
+        name="customers",
+        columns=(ColumnInfo(name="id", data_type="INTEGER", is_primary_key=True),),
+    )
+    orders = TableInfo(
+        name="orders",
+        columns=(
+            ColumnInfo(name="id", data_type="INTEGER", is_primary_key=True),
+            ColumnInfo(
+                name="customer_id",
+                data_type="INTEGER",
+                is_foreign_key=True,
+                references="customers.id",
+            ),
+            ColumnInfo(name="order_date", data_type="TEXT"),
+        ),
+    )
+    return DatabaseCatalog(database_id="shop", tables=(customers, orders))
 
 
 @pytest.fixture()
@@ -306,6 +339,62 @@ class TestDummyExperiment:
         assert strategy.seen_catalog.table_names() == ["orders"]
         assert strategy.seen_catalog.tables[0].column_names() == ["id"]
         assert records[0].metadata["retrieval"]["table_recall"] == 1.0
+
+    def test_projected_catalog_always_retains_key_columns(
+        self,
+        tmp_path: Path,
+        relational_catalog: DatabaseCatalog,
+    ) -> None:
+        """A grounder that doesn't select a table's FK/PK columns must not
+        blind downstream join reasoning: _project_catalog retains them
+        regardless of the grounder's column-relevance scoring."""
+
+        class CapturingStrategy(BaseStrategy):
+            def __init__(self) -> None:
+                self.seen_catalog: DatabaseCatalog | None = None
+
+            def run(self, case: InferenceCase, catalog: DatabaseCatalog) -> Prediction:
+                self.seen_catalog = catalog
+                return Prediction(case_id=case.case_id, predicted_sql="SELECT 1")
+
+        manifest = build_manifest(
+            experiment_id="key-column-retention-test",
+            seed=0,
+            benchmark_name="BIRD",
+            benchmark_revision="test",
+            benchmark_data_hash="h",
+            evaluator_revision="e",
+            strategy_name="Capturing",
+            model_provider="stub",
+            model_name="stub",
+            model_revision="v0",
+            model_temperature=0.0,
+        )
+        strategy = CapturingStrategy()
+        runner = ExperimentRunner(
+            strategy=strategy,
+            evaluator=DummyEvaluator(),
+            logger=RunLogger(runs_root=tmp_path, run_id="key-column-retention-test"),
+            executor=ReadOnlySQLiteExecutor(tmp_path),
+            grounder=DropsForeignKeyColumnGrounder(),
+        )
+
+        runner.run(
+            manifest=manifest,
+            cases=[InferenceCase(case_id="q0", question="Q?", database_id="shop")],
+            golds=[GoldCase(case_id="q0", gold_sql="SELECT 1 FROM orders")],
+            catalogs={"shop": relational_catalog},
+        )
+
+        assert strategy.seen_catalog is not None
+        projected_orders = next(t for t in strategy.seen_catalog.tables if t.name == "orders")
+        projected_customers = next(
+            t for t in strategy.seen_catalog.tables if t.name == "customers"
+        )
+        # order_date was explicitly selected; customer_id (FK) and id (PK) must
+        # survive projection even though the grounder never selected them.
+        assert set(projected_orders.column_names()) == {"id", "customer_id", "order_date"}
+        assert projected_customers.column_names() == ["id"]
 
     def test_relationship_aware_experiment_creates_analysis_artifacts(
         self,

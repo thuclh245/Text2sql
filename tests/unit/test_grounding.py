@@ -12,6 +12,7 @@ from chatsql.domain.catalog import ColumnInfo, DatabaseCatalog, TableInfo
 from chatsql.domain.gold_case import GoldCase
 from chatsql.domain.inference_case import InferenceCase
 from chatsql.evaluation.retrieval import RetrievalEvaluator
+from chatsql.grounding.base import ColumnRef, GroundingResult, TableRef
 from chatsql.grounding.full_schema import FullSchemaGrounder
 from chatsql.grounding.lite_sql_adapter import LitESQLGrounderAdapter
 from chatsql.grounding.registry import get_grounder, list_grounders
@@ -231,6 +232,32 @@ class TestSchemaGraph:
         assert graph["users"] == {"orders"}
         assert graph["orders"] == {"users"}
 
+    def test_bare_table_reference_without_column_resolves(self) -> None:
+        """A dot-less ``REFERENCES parent_table`` (no explicit column) is valid
+        SQL shorthand for the parent's primary key and should resolve to an
+        edge, matching SchemaRelationshipGraph's handling of the same input."""
+        parent = TableInfo(
+            name="customers",
+            columns=(ColumnInfo(name="id", data_type="INTEGER", is_primary_key=True),),
+        )
+        child = TableInfo(
+            name="orders",
+            columns=(
+                ColumnInfo(
+                    name="customer_id",
+                    data_type="INTEGER",
+                    is_foreign_key=True,
+                    references="customers",
+                ),
+            ),
+        )
+        catalog = DatabaseCatalog(database_id="shop", tables=(parent, child))
+
+        graph = build_relationship_graph(catalog)
+
+        assert graph["customers"] == {"orders"}
+        assert graph["orders"] == {"customers"}
+
 
 class TestRelationshipAwareGrounder:
     def test_retrieves_question_matching_tables(
@@ -397,3 +424,46 @@ class TestRetrievalEvaluator:
         metrics = RetrievalEvaluator().evaluate_case(res, gold)
 
         assert metrics.column_recall == 1.0
+
+    def test_retrieval_evaluator_requires_matching_table_for_qualified_gold_columns(
+        self,
+    ) -> None:
+        grounding = GroundingResult(
+            tables=(TableRef(name="orders"),),
+            columns=(ColumnRef(table_name="orders", column_name="id"),),
+        )
+        gold = GoldCase(
+            case_id="c2",
+            gold_sql="SELECT users.id FROM users",
+            gold_tables=("users",),
+            gold_columns=("users.id",),
+        )
+
+        metrics = RetrievalEvaluator().evaluate_case(grounding, gold)
+
+        assert metrics.column_recall == 0.0
+        assert metrics.complete_schema_recall == 0.0
+
+    def test_retrieval_evaluator_parses_aliased_gold_columns_as_table_qualified(
+        self,
+    ) -> None:
+        grounding = GroundingResult(
+            tables=(TableRef(name="users"), TableRef(name="orders")),
+            columns=(
+                ColumnRef(table_name="users", column_name="name"),
+                ColumnRef(table_name="orders", column_name="user_id"),
+            ),
+        )
+        gold = GoldCase(
+            case_id="c3",
+            gold_sql=(
+                "SELECT u.name FROM users AS u "
+                "JOIN orders AS o ON u.id = o.user_id"
+            ),
+        )
+
+        metrics = RetrievalEvaluator().evaluate_case(grounding, gold)
+
+        assert metrics.table_recall == 1.0
+        assert metrics.column_recall == pytest.approx(2 / 3)
+        assert metrics.complete_schema_recall == 0.0

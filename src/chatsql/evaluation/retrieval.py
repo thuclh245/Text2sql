@@ -38,7 +38,7 @@ class RetrievalMetrics:
 
 
 def _extract_gold_tables_and_columns(gold_sql: str) -> tuple[set[str], set[str]]:
-    """Extract table and column names from gold SQL using sqlglot's AST."""
+    """Extract table names and table-qualified columns from gold SQL."""
     try:
         statements = [stmt for stmt in sqlglot.parse(gold_sql, read="sqlite") if stmt is not None]
     except sqlglot.errors.ParseError:
@@ -47,14 +47,45 @@ def _extract_gold_tables_and_columns(gold_sql: str) -> tuple[set[str], set[str]]
     tables: set[str] = set()
     columns: set[str] = set()
     for statement in statements:
+        table_aliases: dict[str, str] = {}
         for table in statement.find_all(exp.Table):
             if table.name:
-                tables.add(table.name.lower())
+                table_name = table.name.lower()
+                tables.add(table_name)
+                table_aliases[table.alias_or_name.lower()] = table_name
         for column in statement.find_all(exp.Column):
             if column.name:
-                columns.add(column.name.lower())
+                column_name = column.name.lower()
+                if column.table:
+                    table_name = table_aliases.get(column.table.lower(), column.table.lower())
+                    columns.add(f"{table_name}.{column_name}")
+                else:
+                    columns.add(column_name)
 
     return tables, columns
+
+
+def _normalize_gold_column(column: str) -> str:
+    """Normalize optional table-qualified gold column annotations."""
+    return ".".join(part.strip('`"[] ').lower() for part in column.split(".") if part.strip())
+
+
+def _match_gold_columns(
+    gold_columns: set[str],
+    retrieved_columns: set[tuple[str, str]],
+) -> set[str]:
+    retrieved_qualified_columns = {f"{table}.{column}" for table, column in retrieved_columns}
+    retrieved_column_names = {column for _, column in retrieved_columns}
+
+    matched_columns: set[str] = set()
+    for gold_column in gold_columns:
+        if "." in gold_column:
+            if gold_column in retrieved_qualified_columns:
+                matched_columns.add(gold_column)
+        elif gold_column in retrieved_column_names:
+            matched_columns.add(gold_column)
+
+    return matched_columns
 
 
 class RetrievalEvaluator:
@@ -66,11 +97,10 @@ class RetrievalEvaluator:
         retrieved_columns = {
             (c.table_name.lower(), c.column_name.lower()) for c in grounding.columns
         }
-        retrieved_column_names = {column for _, column in retrieved_columns}
 
         # Gold tables
         gold_tables: set[str] = {t.lower() for t in gold.gold_tables}
-        gold_columns: set[str] = {c.lower() for c in gold.gold_columns}
+        gold_columns: set[str] = {_normalize_gold_column(c) for c in gold.gold_columns}
 
         if not gold_tables or not gold_columns:
             parsed_tables, parsed_cols = _extract_gold_tables_and_columns(gold.gold_sql)
@@ -96,7 +126,7 @@ class RetrievalEvaluator:
 
         # Column Recall
         if gold_columns:
-            matched_cols = retrieved_column_names & gold_columns
+            matched_cols = _match_gold_columns(gold_columns, retrieved_columns)
             column_recall = len(matched_cols) / len(gold_columns)
         else:
             column_recall = 1.0

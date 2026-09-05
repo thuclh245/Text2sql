@@ -40,6 +40,8 @@ _STRATEGY_ALIASES = {
     "full_schema": "full_schema",
     "full-schema": "full_schema",
     "full_schema_control": "full_schema",
+    "relationship_aware": "relationship_aware",
+    "relationship-aware": "relationship_aware",
 }
 _GROUNDER_ALIASES = {
     "full_schema": "full-schema",

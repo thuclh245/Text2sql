@@ -101,6 +101,33 @@ class TestPromptBuilder:
         prompt, _ = builder.build(simple_case, simple_catalog)
         assert "count all rows" in prompt
 
+    def test_schema_qualified_fk_reference_renders_correctly(
+        self, simple_case: InferenceCase
+    ) -> None:
+        """A 3-part schema-qualified reference must render the table/column
+        segments, not the schema segment, in the FOREIGN KEY DDL comment."""
+        parent = TableInfo(
+            name="users",
+            columns=(ColumnInfo(name="id", data_type="INTEGER", is_primary_key=True),),
+        )
+        child = TableInfo(
+            name="orders",
+            columns=(
+                ColumnInfo(
+                    name="user_id",
+                    data_type="INTEGER",
+                    is_foreign_key=True,
+                    references='"main"."users"."id"',
+                ),
+            ),
+        )
+        catalog = DatabaseCatalog(database_id="shop", tables=(parent, child))
+
+        builder = FullSchemaPromptBuilder()
+        prompt, _ = builder.build(simple_case, catalog)
+
+        assert "FOREIGN KEY (user_id) REFERENCES users(id)" in prompt
+
     def test_context_view_populated(
         self,
         simple_case: InferenceCase,
@@ -175,3 +202,43 @@ class TestFullSchemaStrategy:
 
         cls = get_strategy("full_schema")
         assert cls is FullSchemaStrategy
+
+
+# ---------------------------------------------------------------------------
+# LLM payload preview & verbose printing tests
+# ---------------------------------------------------------------------------
+
+
+class TestLLMRequestPayloadFormatting:
+    def test_format_llm_request_valid_parameters_returns_formatted_string(self) -> None:
+        from chatsql.generation.llm_client import format_llm_request
+
+        preview = format_llm_request(
+            model="gpt-4o-mini",
+            provider="openai",
+            prompt="SELECT * FROM products",
+            temperature=0.2,
+            max_tokens=256,
+        )
+        assert "[CHATSQL -> LLM API REQUEST]" in preview
+        assert "Provider:    openai" in preview
+        assert "Model:       gpt-4o-mini" in preview
+        assert "Temperature: 0.2" in preview
+        assert "Max Tokens:  256" in preview
+        assert "SELECT * FROM products" in preview
+
+    def test_stub_llm_client_verbose_prints_request_payload(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        stub = StubLLMClient(verbose=True)
+        stub.complete("SELECT count(*) FROM users")
+        captured = capsys.readouterr()
+        assert "[CHATSQL -> LLM API REQUEST]" in captured.out
+        assert "SELECT count(*) FROM users" in captured.out
+
+    def test_build_llm_client_verbose_flag_passed_to_instance(self) -> None:
+        from chatsql.generation.llm_client import build_llm_client
+
+        client = build_llm_client({"provider": "stub", "verbose": True})
+        assert client.is_verbose is True
+
